@@ -1,7 +1,7 @@
 <script lang="ts">
   import { unlockVault, syncVault } from "../lib/tauri";
   import { error as logError } from "@tauri-apps/plugin-log";
-  import { vaultLocked, syncStatus, refreshVaultItems } from "../lib/stores";
+  import { vaultLocked, syncStatus, refreshVaultItems, theme } from "../lib/stores";
 
   let passphrase = $state("");
   let error = $state("");
@@ -44,7 +44,7 @@
   <form onsubmit={(e) => { e.preventDefault(); handleUnlock(); }}
         class="w-80 space-y-4">
     <div class="flex justify-center mb-2">
-      <img src="/vaultwarden.svg" alt="Vaultwarden" class="w-16 h-16" onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+      <img src={$theme === "light" ? "/vaultwarden.svg" : "/vaultwarden-light.svg"} alt="Vaultwarden" class="w-16 h-16" onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
     </div>
     <h1 class="text-2xl font-semibold text-gray-100 text-center">Unlock Vault</h1>
     <p class="text-sm text-gray-500 text-center">Enter your master password</p>

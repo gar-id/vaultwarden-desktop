@@ -35,7 +35,7 @@
   role="presentation"
 >
   <div class="flex items-center gap-2 px-3 pointer-events-none">
-    <img src="/vaultwarden.svg" alt="" class="w-4 h-4" />
+    <img src={$theme === "light" ? "/vaultwarden.svg" : "/vaultwarden-light.svg"} alt="" class="w-4 h-4" />
     <span class="text-xs font-medium text-gray-400">Vaultwarden Desktop</span>
   </div>
 
