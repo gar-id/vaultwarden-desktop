@@ -22,6 +22,10 @@ export const addProfile = (input: {
   user_email: string;
   master_password?: string;
   armored_user_private_key?: string;
+  two_factor_provider?: number;
+  two_factor_token?: string;
+  two_factor_remember?: boolean;
+  device_id?: string;
 }) => invoke<ProfileSummary>("add_profile", { input });
 
 export const discoverServer = (serverUrl: string) =>

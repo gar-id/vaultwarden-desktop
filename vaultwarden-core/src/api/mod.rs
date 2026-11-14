@@ -4,7 +4,10 @@ pub mod endpoints;
 pub mod error;
 pub mod sync;
 
-pub use auth::{login, prelogin, refresh_access_token, PreloginResponse, TokenResponse, TwoFactorInput};
+pub use auth::{
+    login, prelogin, refresh_access_token, send_two_factor_email, PreloginResponse, TokenResponse,
+    TwoFactorInput,
+};
 pub use client::{build_client, HttpClient};
 pub use endpoints::ServerEndpoints;
 pub use error::ApiError;

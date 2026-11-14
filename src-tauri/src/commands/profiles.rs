@@ -23,6 +23,10 @@ pub struct AddProfileInput {
     pub user_email: String,
     pub master_password: Option<String>,
     pub armored_user_private_key: Option<String>,
+    pub two_factor_provider: Option<i32>,
+    pub two_factor_token: Option<String>,
+    pub two_factor_remember: Option<bool>,
+    pub device_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -76,19 +80,36 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
     let master_password_hash = crypto::derive_master_password_hash(&master_key, &master_pass)
         .map_err(|e| format!("Password hash derivation failed: {e}"))?;
 
-    let device_id = uuid::Uuid::new_v4().to_string();
+    let device_id = input.device_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let two_factor = input.two_factor_token.as_ref().map(|t| {
+        api::TwoFactorInput {
+            provider: input.two_factor_provider.unwrap_or(0),
+            token: t.trim().to_string(),
+            remember: input.two_factor_remember.unwrap_or(true),
+        }
+    });
 
     // 3. Authenticate with server
-    let token_res = api::login(
+    let token_res = match api::login(
         &client,
         &endpoints.identity_url,
         &email,
         &master_password_hash,
         &device_id,
-        None,
-    )
-    .await
-    .map_err(|e| format!("Login failed: {e}"))?;
+        two_factor,
+    ).await {
+        Ok(t) => t,
+        Err(api::ApiError::TwoFactorRequired { providers, auth_token: _ }) => {
+            // If email 2FA is the only available provider, trigger sending email
+            if providers.contains(&1) && !providers.contains(&0) {
+                let _ = api::send_two_factor_email(&client, &endpoints.api_url, &email, &master_password_hash).await;
+            }
+            let provs_str = providers.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
+            return Err(format!("2FA_REQUIRED:{device_id}:{provs_str}"));
+        }
+        Err(e) => return Err(format!("Login failed: {e}")),
+    };
 
     let account = Account {
         id: uuid::Uuid::new_v4().to_string(),
