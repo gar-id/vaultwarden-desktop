@@ -13,6 +13,7 @@ pub struct AccountSession {
     pub user_key: SymmetricKey,
     pub org_keys: HashMap<String, SymmetricKey>,
     pub rsa_private_key: Option<RsaPrivateKey>,
+    #[allow(dead_code)]
     pub master_password_hash: Zeroizing<String>,
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,

@@ -1,5 +1,5 @@
 use std::time::SystemTime;
-use totp_rs::{Algorithm, Secret, Totp};
+use totp_rs::{Algorithm, Builder, Secret, Totp};
 use super::error::CryptoError;
 
 #[derive(Debug, Clone)]
@@ -21,15 +21,12 @@ pub fn generate_totp_code(secret_or_url: &str) -> Result<TotpCodeResult, CryptoE
         let secret = Secret::try_from_base32(&sanitized)
             .map_err(|e| CryptoError::Totp(format!("Invalid base32 secret: {e:?}")))?;
 
-        Totp::new_unchecked(
-            Algorithm::SHA1,
-            6,
-            1,
-            30,
-            secret.as_bytes().to_vec(),
-            None,
-            String::new(),
-        )
+        Builder::new()
+            .with_algorithm(Algorithm::SHA1)
+            .with_digits(6)
+            .with_step_duration(30)
+            .with_secret(secret.as_bytes().to_vec())
+            .build_noncompliant()
     };
 
     let now = SystemTime::now()

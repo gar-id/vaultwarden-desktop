@@ -341,6 +341,7 @@ pub fn generate_password(rules: PasswordRules) -> Result<String, String> {
 }
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 pub struct NewResourceInput {
     pub name: String,
     pub username: Option<String>,
@@ -359,6 +360,7 @@ pub async fn create_resource(
 }
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 pub struct ResourceUpdateInput {
     pub name: String,
     pub username: Option<String>,

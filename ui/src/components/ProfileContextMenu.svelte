@@ -78,7 +78,7 @@
   {:else}
     <div class="px-3 py-2 space-y-2">
       <p class="text-gray-300 text-xs">
-        Remove "{profileName}" from this device? Your Passbolt account and data on the server are not affected — you can re-add it anytime.
+        Remove "{profileName}" from this device? Your Vaultwarden/Bitwarden account and data on the server are not affected — you can re-add it anytime.
       </p>
       {#if error}
         <p class="text-red-400 text-xs">{error}</p>

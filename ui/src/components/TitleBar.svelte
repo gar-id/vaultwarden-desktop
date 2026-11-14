@@ -35,8 +35,8 @@
   role="presentation"
 >
   <div class="flex items-center gap-2 px-3 pointer-events-none">
-    <img src="/passbolt.svg" alt="" class="w-4 h-4" />
-    <span class="text-xs font-medium text-gray-400">Passbolt Desktop</span>
+    <img src="/vaultwarden.svg" alt="" class="w-4 h-4" />
+    <span class="text-xs font-medium text-gray-400">Vaultwarden Desktop</span>
   </div>
 
   <div class="flex-1"></div>
