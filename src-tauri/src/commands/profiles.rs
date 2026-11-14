@@ -102,6 +102,13 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
         last_sync_timestamp: 0,
         auto_lock_minutes: 15,
         device_id,
+        kdf_type: Some(match kdf_params.kdf_type {
+            crypto::KdfType::Pbkdf2 => 0,
+            crypto::KdfType::Argon2id => 1,
+        }),
+        kdf_iterations: Some(kdf_params.iterations),
+        kdf_memory: kdf_params.memory,
+        kdf_parallelism: kdf_params.parallelism,
     };
 
     let s = state.lock().unwrap();

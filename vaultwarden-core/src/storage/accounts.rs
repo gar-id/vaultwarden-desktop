@@ -24,6 +24,14 @@ pub struct Account {
     pub last_sync_timestamp: i64,
     pub auto_lock_minutes: u32,
     pub device_id: String,
+    #[serde(default)]
+    pub kdf_type: Option<u32>,
+    #[serde(default)]
+    pub kdf_iterations: Option<u32>,
+    #[serde(default)]
+    pub kdf_memory: Option<u32>,
+    #[serde(default)]
+    pub kdf_parallelism: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -160,6 +168,10 @@ mod tests {
             last_sync_timestamp: 0,
             auto_lock_minutes: 15,
             device_id: "dev-uuid-1".into(),
+            kdf_type: Some(0),
+            kdf_iterations: Some(600_000),
+            kdf_memory: None,
+            kdf_parallelism: None,
         };
 
         add_account(&key, account.clone()).unwrap();

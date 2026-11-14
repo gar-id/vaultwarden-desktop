@@ -78,7 +78,7 @@ pub struct UnlockStatus {
 
 #[tauri::command]
 pub async fn unlock_vault(passphrase: String, state: State<'_, SafeState>) -> Result<UnlockStatus, String> {
-    let (account_id, server_url, email, protected_key, protected_priv_key, refresh_token, client) = {
+    let (account_id, server_url, email, protected_key, protected_priv_key, refresh_token, saved_kdf_params, client) = {
         let s = state.lock().unwrap();
         let account_id = s.active_account_id.clone()
             .ok_or("No active account — select an account first")?;
@@ -88,6 +88,13 @@ pub async fn unlock_vault(passphrase: String, state: State<'_, SafeState>) -> Re
             .ok_or("Active account not found")?;
 
         let client = api::build_client();
+        let saved_kdf = api::PreloginResponse {
+            kdf: account.kdf_type,
+            kdf_iterations: account.kdf_iterations,
+            kdf_memory: account.kdf_memory,
+            kdf_parallelism: account.kdf_parallelism,
+            kdf_settings: None,
+        };
         (
             account_id,
             account.server_url.clone(),
@@ -95,21 +102,17 @@ pub async fn unlock_vault(passphrase: String, state: State<'_, SafeState>) -> Re
             account.protected_key.clone(),
             account.protected_private_key.clone(),
             account.refresh_token.clone(),
+            saved_kdf,
             client,
         )
     };
 
     let endpoints = ServerEndpoints::from_base_url(&server_url);
 
-    // 1. Prelogin to get KDF params
+    // 1. Prelogin to get KDF params (fallback to saved account KDF params)
     let prelogin = match api::prelogin(&client, &endpoints.identity_url, &email).await {
         Ok(res) => res,
-        Err(_) => api::PreloginResponse {
-            kdf: Some(0),
-            kdf_iterations: Some(600_000),
-            kdf_memory: None,
-            kdf_parallelism: None,
-        },
+        Err(_) => saved_kdf_params,
     };
     let kdf_params = prelogin.to_kdf_params();
 

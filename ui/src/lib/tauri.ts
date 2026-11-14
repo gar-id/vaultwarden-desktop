@@ -20,7 +20,8 @@ export const addProfile = (input: {
   name: string;
   server_url: string;
   user_email: string;
-  armored_user_private_key: string;
+  master_password?: string;
+  armored_user_private_key?: string;
 }) => invoke<ProfileSummary>("add_profile", { input });
 
 export const discoverServer = (serverUrl: string) =>

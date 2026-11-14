@@ -83,7 +83,12 @@ pub fn derive_master_key(
             // Salt is SHA256(email) for Argon2id in Bitwarden
             let salt = Sha256::digest(normalized_email.as_bytes());
 
-            let memory_kib = params.memory.unwrap_or(64) * 1024;
+            let memory_mb = params.memory.unwrap_or(64);
+            let memory_kib = if memory_mb >= 1024 {
+                memory_mb
+            } else {
+                memory_mb * 1024
+            };
             let iterations = params.iterations.max(1);
             let parallelism = params.parallelism.unwrap_or(4).max(1);
 

@@ -6,6 +6,7 @@
   useEscapeToClose(showAddProfile);
 
   let serverType = $state<"us" | "eu" | "custom">("us");
+  let showPassword = $state(false);
   let form = $state({
     name: "",
     server_url: "https://vault.bitwarden.com",
@@ -41,7 +42,8 @@
         name: form.name.trim() || "My Vault",
         server_url: form.server_url.trim(),
         user_email: form.user_email.trim(),
-        armored_user_private_key: form.master_password, // passed to backend as master_password
+        master_password: form.master_password,
+        armored_user_private_key: form.master_password, // fallback
       });
       profiles.set(await listProfiles());
       showAddProfile.set(false);
@@ -103,8 +105,32 @@
 
       <label class="block">
         <span class="text-xs text-gray-400 uppercase tracking-wide">Master Password</span>
-        <input type="password" placeholder="••••••••••••" bind:value={form.master_password}
-          class="mt-1 w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500" />
+        <div class="relative mt-1 flex items-center">
+          <input
+            type={showPassword ? "text" : "password"}
+            placeholder="••••••••••••"
+            bind:value={form.master_password}
+            class="w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded pl-3 pr-10 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500 font-mono"
+          />
+          <button
+            type="button"
+            onclick={() => (showPassword = !showPassword)}
+            title={showPassword ? "Hide password" : "Show password"}
+            class="absolute right-2 text-gray-400 hover:text-gray-200 transition-colors p-1"
+          >
+            {#if showPassword}
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            {:else}
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            {/if}
+          </button>
+        </div>
       </label>
 
       {#if error}

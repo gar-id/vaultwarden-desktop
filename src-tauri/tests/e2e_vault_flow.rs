@@ -84,6 +84,10 @@ fn full_vaultwarden_flow_add_switch_unlock_search_reveal_lock() {
         last_sync_timestamp: 0,
         auto_lock_minutes: 15,
         device_id: "dev-1".into(),
+        kdf_type: Some(0),
+        kdf_iterations: Some(600_000),
+        kdf_memory: None,
+        kdf_parallelism: None,
     };
 
     accounts::add_account(&master_key, account).expect("seed account");

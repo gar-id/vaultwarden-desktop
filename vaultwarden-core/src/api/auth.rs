@@ -5,34 +5,63 @@ use std::collections::HashMap;
 use crate::api::error::ApiError;
 use crate::crypto::{KdfParams, KdfType};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KdfSettingsObj {
+    #[serde(alias = "kdfType", alias = "KdfType", alias = "kdf", alias = "Kdf")]
+    pub kdf_type: Option<u32>,
+    #[serde(alias = "iterations", alias = "Iterations", alias = "kdfIterations", alias = "KdfIterations")]
+    pub iterations: Option<u32>,
+    #[serde(alias = "memory", alias = "Memory", alias = "kdfMemory", alias = "KdfMemory")]
+    pub memory: Option<u32>,
+    #[serde(alias = "parallelism", alias = "Parallelism", alias = "kdfParallelism", alias = "KdfParallelism")]
+    pub parallelism: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PreloginResponse {
-    #[serde(rename = "Kdf")]
+    #[serde(alias = "kdf", alias = "Kdf", alias = "kdfType", alias = "KdfType")]
     pub kdf: Option<u32>,
-    #[serde(rename = "KdfIterations")]
+    #[serde(alias = "kdfIterations", alias = "KdfIterations", alias = "iterations", alias = "Iterations")]
     pub kdf_iterations: Option<u32>,
-    #[serde(rename = "KdfMemory")]
+    #[serde(alias = "kdfMemory", alias = "KdfMemory", alias = "memory", alias = "Memory")]
     pub kdf_memory: Option<u32>,
-    #[serde(rename = "KdfParallelism")]
+    #[serde(alias = "kdfParallelism", alias = "KdfParallelism", alias = "parallelism", alias = "Parallelism")]
     pub kdf_parallelism: Option<u32>,
+    #[serde(alias = "kdfSettings", alias = "KdfSettings")]
+    pub kdf_settings: Option<KdfSettingsObj>,
 }
 
 impl PreloginResponse {
     pub fn to_kdf_params(&self) -> KdfParams {
-        let kdf_type = match self.kdf.unwrap_or(0) {
+        let kdf_type_num = self.kdf
+            .or_else(|| self.kdf_settings.as_ref().and_then(|s| s.kdf_type))
+            .unwrap_or(0);
+
+        let kdf_type = match kdf_type_num {
             1 => KdfType::Argon2id,
             _ => KdfType::Pbkdf2,
         };
 
+        let iterations = self.kdf_iterations
+            .or_else(|| self.kdf_settings.as_ref().and_then(|s| s.iterations));
+
+        let memory = self.kdf_memory
+            .or_else(|| self.kdf_settings.as_ref().and_then(|s| s.memory));
+
+        let parallelism = self.kdf_parallelism
+            .or_else(|| self.kdf_settings.as_ref().and_then(|s| s.parallelism));
+
         match kdf_type {
             KdfType::Pbkdf2 => {
-                KdfParams::pbkdf2(self.kdf_iterations.unwrap_or(600_000))
+                KdfParams::pbkdf2(iterations.unwrap_or(600_000))
             }
             KdfType::Argon2id => {
                 KdfParams::argon2id(
-                    self.kdf_iterations.unwrap_or(3),
-                    self.kdf_memory.unwrap_or(64),
-                    self.kdf_parallelism.unwrap_or(4),
+                    iterations.unwrap_or(3),
+                    memory.unwrap_or(64),
+                    parallelism.unwrap_or(4),
                 )
             }
         }
@@ -45,17 +74,17 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
     pub expires_in: i64,
     pub token_type: String,
-    #[serde(rename = "Key")]
+    #[serde(alias = "Key", alias = "key")]
     pub key: Option<String>,
-    #[serde(rename = "PrivateKey")]
+    #[serde(alias = "PrivateKey", alias = "privateKey")]
     pub private_key: Option<String>,
-    #[serde(rename = "Kdf")]
+    #[serde(alias = "Kdf", alias = "kdf", alias = "kdfType")]
     pub kdf: Option<u32>,
-    #[serde(rename = "KdfIterations")]
+    #[serde(alias = "KdfIterations", alias = "kdfIterations", alias = "iterations")]
     pub kdf_iterations: Option<u32>,
-    #[serde(rename = "KdfMemory")]
+    #[serde(alias = "KdfMemory", alias = "kdfMemory", alias = "memory")]
     pub kdf_memory: Option<u32>,
-    #[serde(rename = "KdfParallelism")]
+    #[serde(alias = "KdfParallelism", alias = "kdfParallelism", alias = "parallelism")]
     pub kdf_parallelism: Option<u32>,
 }
 
@@ -100,15 +129,31 @@ pub async fn login(
 ) -> Result<TokenResponse, ApiError> {
     let url = format!("{}/connect/token", identity_url.trim_end_matches('/'));
 
+    let device_type = if cfg!(target_os = "windows") {
+        "6"
+    } else if cfg!(target_os = "macos") {
+        "7"
+    } else {
+        "8"
+    };
+
+    let device_name = if cfg!(target_os = "windows") {
+        "Windows Desktop"
+    } else if cfg!(target_os = "macos") {
+        "macOS Desktop"
+    } else {
+        "Linux Desktop"
+    };
+
     let mut form = HashMap::new();
     form.insert("grant_type", "password".to_string());
     form.insert("username", email.trim().to_lowercase());
     form.insert("password", master_password_hash.to_string());
     form.insert("scope", "api offline_access".to_string());
     form.insert("client_id", "desktop".to_string());
-    form.insert("deviceType", "8".to_string()); // LinuxDesktop
+    form.insert("deviceType", device_type.to_string());
     form.insert("deviceIdentifier", device_id.to_string());
-    form.insert("deviceName", "Vaultwarden Desktop".to_string());
+    form.insert("deviceName", device_name.to_string());
 
     if let Some(tf) = two_factor {
         form.insert("twoFactorProvider", tf.provider.to_string());
@@ -145,10 +190,20 @@ pub async fn login(
         }
 
         let desc = err_json
-            .get("error_description")
+            .get("ErrorModel")
+            .and_then(|m| m.get("Message"))
             .and_then(|v| v.as_str())
+            .or_else(|| err_json.get("error_description").and_then(|v| v.as_str()))
+            .or_else(|| err_json.get("message").and_then(|v| v.as_str()))
             .unwrap_or("Invalid email or master password");
-        return Err(ApiError::Auth(desc.to_string()));
+
+        let friendly_desc = if desc == "invalid_username_or_password" {
+            "Username or password is incorrect. Please check your email and master password."
+        } else {
+            desc
+        };
+
+        return Err(ApiError::Auth(friendly_desc.to_string()));
     }
 
     if !resp.status().is_success() {
@@ -179,4 +234,24 @@ pub async fn refresh_access_token(
 
     let token_res: TokenResponse = resp.json().await?;
     Ok(token_res)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prelogin_response_us_and_eu() {
+        let us_json = r#"{"kdf":0,"kdfIterations":600000,"kdfMemory":null,"kdfParallelism":null}"#;
+        let us: PreloginResponse = serde_json::from_str(us_json).unwrap();
+        assert_eq!(us.to_kdf_params(), KdfParams::pbkdf2(600_000));
+
+        let eu_json = r#"{"kdf":1,"kdfIterations":6,"kdfMemory":32,"kdfParallelism":4,"kdfSettings":{"kdfType":1,"iterations":6,"memory":32,"parallelism":4},"salt":null}"#;
+        let eu: PreloginResponse = serde_json::from_str(eu_json).unwrap();
+        assert_eq!(eu.to_kdf_params(), KdfParams::argon2id(6, 32, 4));
+
+        let pascal_json = r#"{"Kdf":0,"KdfIterations":100000,"KdfMemory":null,"KdfParallelism":null}"#;
+        let pascal: PreloginResponse = serde_json::from_str(pascal_json).unwrap();
+        assert_eq!(pascal.to_kdf_params(), KdfParams::pbkdf2(100_000));
+    }
 }
