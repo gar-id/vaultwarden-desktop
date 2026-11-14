@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@theme {
+  /* Bitwarden / Vaultwarden brand blue (#175ddc), expanded into a full shade scale */
+  --color-brand-50: #eff6ff;
+  --color-brand-100: #dbeafe;
+  --color-brand-200: #bfdbfe;
+  --color-brand-300: #93c5fd;
+  --color-brand-400: #60a5fa;
+  --color-brand-500: #3b82f6;
+  --color-brand-600: #175ddc;
+  --color-brand-700: #1d4ed8;
+  --color-brand-800: #1e40af;
+  --color-brand-900: #1e3a8a;
+  --color-brand-950: #172554;
+
+  /* Neutral dark background scale */
+  --color-gray-50: #f7f7f7;
+  --color-gray-100: #e8e8e8;
+  --color-gray-200: #d1d1d1;
+  --color-gray-300: #a8a8a8;
+  --color-gray-400: #7a7a7a;
+  --color-gray-500: #585858;
+  --color-gray-600: #404040;
+  --color-gray-700: #2a2a2a;
+  --color-gray-800: #1a1a1a;
+  --color-gray-900: #101010;
+  --color-gray-950: #060606;
+}
+
+:root {
+  /* Enforce native dark popups, selects, and controls in dark mode */
+  color-scheme: dark;
+}
+
+html.light {
+  /* Invert gray scale for light mode: dark backgrounds become light,
+     and light text becomes dark, while maintaining crisp contrast. */
+  --color-gray-50: #09090b;
+  --color-gray-100: #18181b;
+  --color-gray-200: #27272a;
+  --color-gray-300: #3f3f46;
+  --color-gray-400: #52525b;
+  --color-gray-500: #71717a;
+  --color-gray-600: #a1a1aa;
+  --color-gray-700: #d4d4d8;
+  --color-gray-800: #e4e4e7;
+  --color-gray-900: #ffffff;
+  --color-gray-950: #f4f4f5;
+
+  /* Blue on white/light background needs slightly deeper shade for readability */
+  --color-brand-400: #175ddc;
+  --color-brand-500: #1d4ed8;
+
+  color-scheme: light;
+}

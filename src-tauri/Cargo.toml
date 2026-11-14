@@ -1,0 +1,39 @@
+[package]
+name = "vaultwarden-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "vaultwarden_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+vaultwarden-core = { path = "../vaultwarden-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+arboard = "3"
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+rand = "0.8"
+rsa = "0.9"
+rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["tray-icon", "test", "image-png"] }
+tempfile = "3"
