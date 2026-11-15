@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0, leave empty to use version from tauri.conf.json)'
+        required: false
+        default: ''
+      draft:
+        description: 'Create draft release'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as prerelease'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tag-check:
+    name: Resolve & Ensure Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve-tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: resolve-tag
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+            TAG="v${VERSION}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: ${TAG}"
+
+          # When triggered via workflow_dispatch, create and push tag if not existing
+          if [ "${{ github.ref_type }}" != "tag" ]; then
+            if git rev-parse "${TAG}" >/dev/null 2>&1 || git ls-remote --tags origin "${TAG}" | grep -q "refs/tags/${TAG}$"; then
+              echo "Tag ${TAG} already exists on remote."
+            else
+              echo "Tag ${TAG} does not exist. Creating and pushing tag..."
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "${TAG}" -m "Release ${TAG}"
+              git push origin "${TAG}" || true
+            fi
+          fi
+
+  build-and-release:
+    name: Build (${{ matrix.name }})
+    needs: tag-check
+    runs-on: ${{ matrix.platform }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux AMD64 (x86_64) -> .deb, .AppImage
+          - platform: 'ubuntu-22.04'
+            name: 'Linux x86_64'
+            args: ''
+
+          # Linux ARM64 (aarch64) -> .deb, .AppImage (public GitHub-hosted runners)
+          - platform: 'ubuntu-24.04-arm'
+            name: 'Linux ARM64'
+            args: ''
+            experimental: true
+
+          # macOS Apple Silicon (aarch64) -> .dmg, .app
+          - platform: 'macos-latest'
+            name: 'macOS Apple Silicon (aarch64)'
+            args: '--target aarch64-apple-darwin'
+
+          # macOS Intel (x86_64) -> .dmg, .app
+          - platform: 'macos-latest'
+            name: 'macOS Intel (x86_64)'
+            args: '--target x86_64-apple-darwin'
+
+          # Windows x64 (x86_64) -> .msi, .exe (NSIS)
+          - platform: 'windows-latest'
+            name: 'Windows x64'
+            args: ''
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        run: npm --prefix ui ci
+
+      - name: Build and Publish Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.tag-check.outputs.tag }}
+          releaseName: 'Vaultwarden Desktop ${{ needs.tag-check.outputs.tag }}'
+          releaseBody: 'See the assets below to download and install for your platform.'
+          releaseDraft: ${{ inputs.draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+          generateReleaseNotes: true
+          args: ${{ matrix.args }}

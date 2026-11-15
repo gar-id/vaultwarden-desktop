@@ -65,7 +65,7 @@ endif
 .PHONY: help dev-setup dev-sys-deps dev-sys-deps-linux dev-sys-deps-macos dev-sys-deps-windows dev-rust dev-node-check \
         setup check test test-core test-e2e fmt lint \
         ui-install ui-build ui-dev \
-        build build-release run bundle \
+        build build-release run bundle tag \
         install install-linux install-windows install-macos install-darwin \
         uninstall uninstall-linux uninstall-windows uninstall-macos uninstall-darwin \
         desktop desktop-linux desktop-windows desktop-entry desktop-shortcut \
@@ -185,6 +185,14 @@ run: build-release ## Build release and launch the binary directly — the real 
 
 bundle: ## Produce a distributable package (.AppImage/.deb on Linux, .app/.dmg on macOS, .msi/.exe on Windows)
 	cargo tauri build
+
+tag: ## Create and push a git release tag to trigger the release workflow (e.g. make tag VERSION=v0.1.0)
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Error: VERSION is required. Example: make tag VERSION=v0.1.0"; \
+		exit 1; \
+	fi
+	git tag -a $(VERSION) -m "Release $(VERSION)"
+	git push origin $(VERSION)
 
 ## --- Installation & Shortcuts ---
 
