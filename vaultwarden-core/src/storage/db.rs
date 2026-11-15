@@ -279,52 +279,96 @@ pub fn search_ciphers(
     organization_id: Option<&str>,
 ) -> Result<Vec<DecryptedCipherSummary>, StorageError> {
     let trimmed = query.trim();
+    let is_favorites = folder_id == Some("__favorites__");
+    let actual_folder_id = if is_favorites { None } else { folder_id };
 
-    let sql = if trimmed.is_empty() {
-        "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
-         FROM ciphers c
-         JOIN search_cache s ON c.id = s.cipher_id
-         WHERE c.deleted_date IS NULL
-           AND (?1 IS NULL OR c.folder_id = ?1)
-           AND (?2 IS NULL OR c.organization_id = ?2)
-         ORDER BY s.name COLLATE NOCASE ASC"
-    } else {
-        "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
-         FROM ciphers c
-         JOIN search_cache s ON c.id = s.cipher_id
-         JOIN ciphers_fts f ON s.rowid = f.rowid
-         WHERE ciphers_fts MATCH ?3
-           AND c.deleted_date IS NULL
-           AND (?1 IS NULL OR c.folder_id = ?1)
-           AND (?2 IS NULL OR c.organization_id = ?2)
-         ORDER BY rank"
+    let map_row = |row: &rusqlite::Row| {
+        let fav: i32 = row.get(7)?;
+        Ok(DecryptedCipherSummary {
+            id: row.get(0)?,
+            organization_id: row.get(1)?,
+            folder_id: row.get(2)?,
+            cipher_type: row.get(3)?,
+            name: row.get(4)?,
+            username: row.get(5)?,
+            uri: row.get(6)?,
+            favorite: fav != 0,
+            revision_date: row.get(8)?,
+        })
     };
 
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    let rows = if trimmed.is_empty() {
+        if is_favorites {
+            let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
+                       FROM ciphers c
+                       JOIN search_cache s ON c.id = s.cipher_id
+                       WHERE c.deleted_date IS NULL
+                         AND c.favorite = 1
+                         AND (?1 IS NULL OR c.organization_id = ?1)
+                       ORDER BY s.name COLLATE NOCASE ASC";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let mapped = stmt.query_map(params![organization_id], map_row)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        } else {
+            let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
+                       FROM ciphers c
+                       JOIN search_cache s ON c.id = s.cipher_id
+                       WHERE c.deleted_date IS NULL
+                         AND (?1 IS NULL OR c.folder_id = ?1)
+                         AND (?2 IS NULL OR c.organization_id = ?2)
+                       ORDER BY s.name COLLATE NOCASE ASC";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let mapped = stmt.query_map(params![actual_folder_id, organization_id], map_row)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        }
+    } else {
+        let escaped = trimmed.replace('"', "\"\"");
+        let fts_query = format!("\"{escaped}\"*");
 
-    let escaped = trimmed.replace('"', "\"\"");
-    let fts_query = format!("\"{escaped}\"*");
-
-    let rows = stmt
-        .query_map(params![folder_id, organization_id, fts_query], |row| {
-            let fav: i32 = row.get(7)?;
-            Ok(DecryptedCipherSummary {
-                id: row.get(0)?,
-                organization_id: row.get(1)?,
-                folder_id: row.get(2)?,
-                cipher_type: row.get(3)?,
-                name: row.get(4)?,
-                username: row.get(5)?,
-                uri: row.get(6)?,
-                favorite: fav != 0,
-                revision_date: row.get(8)?,
-            })
-        })
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
-        .collect::<SqlResult<Vec<_>>>()
-        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        if is_favorites {
+            let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
+                       FROM ciphers c
+                       JOIN search_cache s ON c.id = s.cipher_id
+                       JOIN ciphers_fts f ON s.rowid = f.rowid
+                       WHERE ciphers_fts MATCH ?1
+                         AND c.deleted_date IS NULL
+                         AND c.favorite = 1
+                         AND (?2 IS NULL OR c.organization_id = ?2)
+                       ORDER BY rank";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let mapped = stmt.query_map(params![fts_query, organization_id], map_row)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        } else {
+            let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
+                       FROM ciphers c
+                       JOIN search_cache s ON c.id = s.cipher_id
+                       JOIN ciphers_fts f ON s.rowid = f.rowid
+                       WHERE ciphers_fts MATCH ?3
+                         AND c.deleted_date IS NULL
+                         AND (?1 IS NULL OR c.folder_id = ?1)
+                         AND (?2 IS NULL OR c.organization_id = ?2)
+                       ORDER BY rank";
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let mapped = stmt.query_map(params![actual_folder_id, organization_id, fts_query], map_row)
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            mapped.collect::<SqlResult<Vec<_>>>()
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        }
+    };
 
     Ok(rows)
 }
@@ -507,6 +551,15 @@ mod tests {
         // Username search
         let res_user = search_ciphers(&conn, "tegar", None, None).unwrap();
         assert_eq!(res_user.len(), 1);
+
+        // Empty query search (initial load)
+        let res_all = search_ciphers(&conn, "", None, None).unwrap();
+        assert_eq!(res_all.len(), 1);
+        assert_eq!(res_all[0].name, "GitHub Personal");
+
+        // Favorites search on non-favorite
+        let res_fav = search_ciphers(&conn, "", Some("__favorites__"), None).unwrap();
+        assert_eq!(res_fav.len(), 0);
 
         // Delete cipher
         delete_cipher(&conn, "cipher-1").unwrap();
