@@ -102,19 +102,30 @@ pub async fn prelogin(
     email: &str,
 ) -> Result<PreloginResponse, ApiError> {
     let url = format!("{}/accounts/prelogin", identity_url.trim_end_matches('/'));
+    let normalized_email = email.trim().to_lowercase();
+    log::info!("[AUTH] prelogin request: POST {} with email='{}'", url, normalized_email);
+    eprintln!("[AUTH] prelogin request: POST {} with email='{}'", url, normalized_email);
+
     let body = serde_json::json!({
-        "email": email.trim().to_lowercase()
+        "email": normalized_email
     });
 
     let resp = client.post(&url).json(&body).send().await?;
-    if !resp.status().is_success() {
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    log::info!("[AUTH] prelogin response: status={}, body='{}'", status, text);
+    eprintln!("[AUTH] prelogin response: status={}, body='{}'", status, text);
+
+    if !status.is_success() {
         return Err(ApiError::Auth(format!(
-            "Prelogin failed with status {}",
-            resp.status()
+            "Prelogin failed with status {status}: {text}"
         )));
     }
 
-    let prelogin_res: PreloginResponse = resp.json().await?;
+    let prelogin_res: PreloginResponse = serde_json::from_str(&text)
+        .map_err(|e| ApiError::Parse(format!("Failed to parse prelogin JSON ({e}): {text}")))?;
+    log::info!("[AUTH] prelogin parsed KDF: {:?}", prelogin_res.to_kdf_params());
+    eprintln!("[AUTH] prelogin parsed KDF: {:?}", prelogin_res.to_kdf_params());
     Ok(prelogin_res)
 }
 
@@ -145,9 +156,27 @@ pub async fn login(
         "Linux Desktop"
     };
 
+    let normalized_email = email.trim().to_lowercase();
+    log::info!(
+        "[AUTH] login request: POST {} email='{}' deviceType={} deviceId={} 2fa={}",
+        url,
+        normalized_email,
+        device_type,
+        device_id,
+        two_factor.is_some()
+    );
+    eprintln!(
+        "[AUTH] login request: POST {} email='{}' deviceType={} deviceId={} 2fa={}",
+        url,
+        normalized_email,
+        device_type,
+        device_id,
+        two_factor.is_some()
+    );
+
     let mut form = HashMap::new();
     form.insert("grant_type", "password".to_string());
-    form.insert("username", email.trim().to_lowercase());
+    form.insert("username", normalized_email);
     form.insert("password", master_password_hash.to_string());
     form.insert("scope", "api offline_access".to_string());
     form.insert("client_id", "desktop".to_string());
@@ -155,80 +184,89 @@ pub async fn login(
     form.insert("deviceIdentifier", device_id.to_string());
     form.insert("deviceName", device_name.to_string());
 
-        if let Some(ref tf) = two_factor {
-            form.insert("twoFactorProvider", tf.provider.to_string());
-            form.insert("twoFactorTokenProvider", tf.provider.to_string());
-            form.insert("twoFactorToken", tf.token.trim().to_string());
-            if tf.remember {
-                form.insert("twoFactorRemember", "1".to_string());
-            }
+    if let Some(ref tf) = two_factor {
+        log::info!("[AUTH] submitting 2FA token (provider={}, token_len={})", tf.provider, tf.token.len());
+        eprintln!("[AUTH] submitting 2FA token (provider={}, token_len={})", tf.provider, tf.token.len());
+        form.insert("twoFactorProvider", tf.provider.to_string());
+        form.insert("twoFactorTokenProvider", tf.provider.to_string());
+        form.insert("twoFactorToken", tf.token.trim().to_string());
+        if tf.remember {
+            form.insert("twoFactorRemember", "1".to_string());
         }
+    }
 
-        let resp = client.post(&url).form(&form).send().await?;
+    let resp = client.post(&url).form(&form).send().await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    log::info!("[AUTH] login response: status={}", status);
+    eprintln!("[AUTH] login response: status={}", status);
 
-        if resp.status() == 400 {
-            let err_json: serde_json::Value = resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        log::warn!("[AUTH] login error response body: {}", text);
+        eprintln!("[AUTH] login error response body: {}", text);
+        let err_json: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
 
-            // Only trigger TwoFactorRequired if user did not supply a 2FA token
-            if two_factor.is_none() {
-                if let Some(providers_val) = err_json.get("TwoFactorProviders2")
-                    .or_else(|| err_json.get("TwoFactorProviders"))
-                {
-                    let providers: Vec<i32> = if let Some(obj) = providers_val.as_object() {
-                        obj.keys().filter_map(|k| k.parse().ok()).collect()
-                    } else if let Some(arr) = providers_val.as_array() {
-                        arr.iter().filter_map(|v| v.as_i64().map(|i| i as i32)).collect()
-                    } else {
-                        vec![]
-                    };
+        // Only trigger TwoFactorRequired if user did not supply a 2FA token
+        if two_factor.is_none() {
+            if let Some(providers_val) = err_json.get("TwoFactorProviders2")
+                .or_else(|| err_json.get("TwoFactorProviders"))
+            {
+                let providers: Vec<i32> = if let Some(obj) = providers_val.as_object() {
+                    obj.keys().filter_map(|k| k.parse().ok()).collect()
+                } else if let Some(arr) = providers_val.as_array() {
+                    arr.iter().filter_map(|v| v.as_i64().map(|i| i as i32)).collect()
+                } else {
+                    vec![]
+                };
 
-                    let auth_token = err_json
-                        .get("auth_token")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-
-                    return Err(ApiError::TwoFactorRequired {
-                        providers,
-                        auth_token,
-                    });
-                }
-            } else {
-                // If two_factor was provided, check if it was invalid
-                let desc = err_json
-                    .get("ErrorModel")
-                    .and_then(|m| m.get("Message"))
+                let auth_token = err_json
+                    .get("auth_token")
                     .and_then(|v| v.as_str())
-                    .or_else(|| err_json.get("error_description").and_then(|v| v.as_str()))
-                    .unwrap_or("");
-                if desc.contains("Two-factor") || desc.contains("twoFactor") || desc.contains("invalid_token") || desc == "invalid_grant" {
-                    return Err(ApiError::Auth(
-                        "Invalid two-step verification code. Please check your authenticator and try again.".into()
-                    ));
-                }
-            }
+                    .map(|s| s.to_string());
 
+                log::info!("[AUTH] 2FA required by server. Available providers: {:?}", providers);
+                eprintln!("[AUTH] 2FA required by server. Available providers: {:?}", providers);
+                return Err(ApiError::TwoFactorRequired {
+                    providers,
+                    auth_token,
+                });
+            }
+        } else {
+            // If two_factor was provided, check if it was invalid
             let desc = err_json
                 .get("ErrorModel")
                 .and_then(|m| m.get("Message"))
                 .and_then(|v| v.as_str())
                 .or_else(|| err_json.get("error_description").and_then(|v| v.as_str()))
-                .or_else(|| err_json.get("message").and_then(|v| v.as_str()))
-                .unwrap_or("Invalid email or master password");
-
-            let friendly_desc = if desc == "invalid_username_or_password" {
-                "Username or password is incorrect. Please check your email and master password."
-            } else {
-                desc
-            };
-
-            return Err(ApiError::Auth(friendly_desc.to_string()));
+                .unwrap_or("");
+            if desc.contains("Two-factor") || desc.contains("twoFactor") || desc.contains("invalid_token") || desc == "invalid_grant" {
+                return Err(ApiError::Auth(
+                    "Invalid two-step verification code. Please check your authenticator and try again.".into()
+                ));
+            }
         }
 
-    if !resp.status().is_success() {
-        return Err(ApiError::Auth(format!("Login failed: {}", resp.status())));
+        let desc = err_json
+            .get("ErrorModel")
+            .and_then(|m| m.get("Message"))
+            .and_then(|v| v.as_str())
+            .or_else(|| err_json.get("error_description").and_then(|v| v.as_str()))
+            .or_else(|| err_json.get("message").and_then(|v| v.as_str()))
+            .unwrap_or("Invalid email or master password");
+
+        let friendly_desc = if desc == "invalid_username_or_password" {
+            "Username or password is incorrect. Please check your email and master password."
+        } else {
+            desc
+        };
+
+        return Err(ApiError::Auth(friendly_desc.to_string()));
     }
 
-    let token_res: TokenResponse = resp.json().await?;
+    log::info!("[AUTH] login successful! Parsing token response");
+    eprintln!("[AUTH] login successful! Parsing token response");
+    let token_res: TokenResponse = serde_json::from_str(&text)
+        .map_err(|e| ApiError::Parse(format!("Failed to parse token response ({e}): {text}")))?;
     Ok(token_res)
 }
 

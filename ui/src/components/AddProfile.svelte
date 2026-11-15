@@ -54,6 +54,15 @@
     loading = true;
     error = "";
 
+    console.log("[AddProfile] Submitting login request:", {
+      serverType,
+      url: form.server_url,
+      email: form.user_email.trim(),
+      pwdLen: form.master_password.length,
+      step,
+      twoFactorTokenLen: twoFactorCode.trim().length,
+    });
+
     try {
       await addProfile({
         name: form.name.trim() || "My Vault",
@@ -67,11 +76,13 @@
         device_id: savedDeviceId || undefined,
       });
 
+      console.log("[AddProfile] Login successful!");
       profiles.set(await listProfiles());
       showAddProfile.set(false);
       resetForm();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.error("[AddProfile] Login error received:", msg);
 
       if (msg.includes("2FA_REQUIRED")) {
         // Backend format: "2FA_REQUIRED:<device_id>:<providers_comma_separated>"

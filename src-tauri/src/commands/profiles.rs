@@ -66,12 +66,19 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
         .or(input.armored_user_private_key)
         .ok_or("Master password is required")?;
 
+    log::info!("[IPC] add_profile called: server='{}', email='{}', pwd_len={}", input.server_url, email, master_pass.len());
+    eprintln!("[IPC] add_profile called: server='{}', email='{}', pwd_len={}", input.server_url, email, master_pass.len());
+    log::info!("[IPC] endpoints: identity='{}', api='{}'", endpoints.identity_url, endpoints.api_url);
+    eprintln!("[IPC] endpoints: identity='{}', api='{}'", endpoints.identity_url, endpoints.api_url);
+
     // 1. Fetch prelogin config (KDF type and iterations)
-    let prelogin = api::prelogin(&client, &endpoints.identity_url, &email)
+    let prelogin = api::prelogin(&client.client, &endpoints.identity_url, &email)
         .await
         .map_err(|e| format!("Prelogin failed: {e}"))?;
 
     let kdf_params = prelogin.to_kdf_params();
+    log::info!("[IPC] KDF params for login: {:?}", kdf_params);
+    eprintln!("[IPC] KDF params for login: {:?}", kdf_params);
 
     // 2. Derive Master Key and Master Password Hash
     let master_key = crypto::derive_master_key(&master_pass, &email, &kdf_params)
@@ -92,7 +99,7 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
 
     // 3. Authenticate with server
     let token_res = match api::login(
-        &client,
+        &client.client,
         &endpoints.identity_url,
         &email,
         &master_password_hash,
@@ -103,7 +110,7 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
         Err(api::ApiError::TwoFactorRequired { providers, auth_token: _ }) => {
             // If email 2FA is the only available provider, trigger sending email
             if providers.contains(&1) && !providers.contains(&0) {
-                let _ = api::send_two_factor_email(&client, &endpoints.api_url, &email, &master_password_hash).await;
+                let _ = api::send_two_factor_email(&client.client, &endpoints.api_url, &email, &master_password_hash).await;
             }
             let provs_str = providers.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
             return Err(format!("2FA_REQUIRED:{device_id}:{provs_str}"));

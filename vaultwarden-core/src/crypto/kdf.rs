@@ -69,6 +69,25 @@ pub fn derive_master_key(
     let normalized_email = email.trim().to_lowercase();
     let mut master_key = [0u8; 32];
 
+    log::info!(
+        "[CRYPTO] derive_master_key: email='{}', pwd_len={}, kdf={:?}, iter={}, mem={:?}, par={:?}",
+        normalized_email,
+        password.len(),
+        params.kdf_type,
+        params.iterations,
+        params.memory,
+        params.parallelism
+    );
+    eprintln!(
+        "[CRYPTO] derive_master_key: email='{}', pwd_len={}, kdf={:?}, iter={}, mem={:?}, par={:?}",
+        normalized_email,
+        password.len(),
+        params.kdf_type,
+        params.iterations,
+        params.memory,
+        params.parallelism
+    );
+
     match params.kdf_type {
         KdfType::Pbkdf2 => {
             let salt = normalized_email.as_bytes();
@@ -120,6 +139,13 @@ pub fn derive_master_password_hash(
     );
     let encoded = BASE64.encode(hash);
     hash.zeroize();
+    let preview = if encoded.len() > 10 {
+        format!("{}...{}", &encoded[..4], &encoded[encoded.len() - 4..])
+    } else {
+        "***".to_string()
+    };
+    log::info!("[CRYPTO] derive_master_password_hash: generated hash (preview: {})", preview);
+    eprintln!("[CRYPTO] derive_master_password_hash: generated hash (preview: {})", preview);
     Ok(encoded)
 }
 
