@@ -13,8 +13,35 @@ pub struct HttpClient {
 impl HttpClient {
     pub fn new() -> Self {
         let jar = Arc::new(Jar::default());
+
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            "Bitwarden-Client-Version",
+            reqwest::header::HeaderValue::from_static("2026.10.1"),
+        );
+        default_headers.insert(
+            "Bitwarden-Client-Name",
+            reqwest::header::HeaderValue::from_static("desktop"),
+        );
+        default_headers.insert(
+            reqwest::header::ACCEPT,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        let device_type_str = if cfg!(target_os = "windows") {
+            "6"
+        } else if cfg!(target_os = "macos") {
+            "7"
+        } else {
+            "8"
+        };
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(device_type_str) {
+            default_headers.insert("Device-Type", v);
+        }
+
         let client = Client::builder()
             .cookie_provider(jar.clone())
+            .default_headers(default_headers)
             .use_rustls_tls()
             .timeout(std::time::Duration::from_secs(30))
             .build()

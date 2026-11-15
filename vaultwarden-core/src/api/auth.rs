@@ -185,11 +185,12 @@ pub async fn login(
     form.insert("deviceName", device_name.to_string());
 
     if let Some(ref tf) = two_factor {
-        log::info!("[AUTH] submitting 2FA token (provider={}, token_len={})", tf.provider, tf.token.len());
-        eprintln!("[AUTH] submitting 2FA token (provider={}, token_len={})", tf.provider, tf.token.len());
+        log::info!("[AUTH] submitting 2FA/OTP token (provider={}, token_len={})", tf.provider, tf.token.len());
+        eprintln!("[AUTH] submitting 2FA/OTP token (provider={}, token_len={})", tf.provider, tf.token.len());
         form.insert("twoFactorProvider", tf.provider.to_string());
         form.insert("twoFactorTokenProvider", tf.provider.to_string());
         form.insert("twoFactorToken", tf.token.trim().to_string());
+        form.insert("newDeviceOtp", tf.token.trim().to_string());
         if tf.remember {
             form.insert("twoFactorRemember", "1".to_string());
         }
@@ -231,6 +232,23 @@ pub async fn login(
                     auth_token,
                 });
             }
+
+            // Check for New Device Verification (NDLP)
+            let err_type = err_json.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            let desc = err_json.get("error_description").and_then(|v| v.as_str()).unwrap_or("");
+            let msg = err_json.get("ErrorModel").and_then(|m| m.get("Message")).and_then(|v| v.as_str()).unwrap_or("");
+
+            if err_type == "device_error"
+                || desc.to_lowercase().contains("device verification")
+                || msg.to_lowercase().contains("device verification")
+            {
+                log::info!("[AUTH] New Device Verification required by server (code dispatched to email)");
+                eprintln!("[AUTH] New Device Verification required by server (code dispatched to email)");
+                return Err(ApiError::TwoFactorRequired {
+                    providers: vec![100], // 100 = New Device Verification email OTP
+                    auth_token: None,
+                });
+            }
         } else {
             // If two_factor was provided, check if it was invalid
             let desc = err_json
@@ -239,9 +257,14 @@ pub async fn login(
                 .and_then(|v| v.as_str())
                 .or_else(|| err_json.get("error_description").and_then(|v| v.as_str()))
                 .unwrap_or("");
-            if desc.contains("Two-factor") || desc.contains("twoFactor") || desc.contains("invalid_token") || desc == "invalid_grant" {
+            if desc.to_lowercase().contains("invalid new device otp")
+                || desc.to_lowercase().contains("two-factor")
+                || desc.to_lowercase().contains("twofactor")
+                || desc.to_lowercase().contains("invalid_token")
+                || desc == "invalid_grant"
+            {
                 return Err(ApiError::Auth(
-                    "Invalid two-step verification code. Please check your authenticator and try again.".into()
+                    "Invalid verification code. Please check your email or authenticator and try again.".into()
                 ));
             }
         }

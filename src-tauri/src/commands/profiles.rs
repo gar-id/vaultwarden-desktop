@@ -108,6 +108,10 @@ pub async fn add_profile(input: AddProfileInput, state: State<'_, SafeState>) ->
     ).await {
         Ok(t) => t,
         Err(api::ApiError::TwoFactorRequired { providers, auth_token: _ }) => {
+            if providers.contains(&100) {
+                log::info!("[IPC] New Device Verification required for {}", email);
+                return Err(format!("2FA_REQUIRED:{device_id}:new_device_email"));
+            }
             // If email 2FA is the only available provider, trigger sending email
             if providers.contains(&1) && !providers.contains(&0) {
                 let _ = api::send_two_factor_email(&client.client, &endpoints.api_url, &email, &master_password_hash).await;
