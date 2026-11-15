@@ -708,25 +708,131 @@ pub async fn delete_resource(resource_id: String, state: State<'_, SafeState>) -
 
 #[tauri::command]
 pub async fn create_folder(
-    _name: String,
-    _parent_id: Option<String>,
-    _state: State<'_, SafeState>,
+    name: String,
+    parent_id: Option<String>,
+    state: State<'_, SafeState>,
 ) -> Result<String, String> {
-    Err("Online folder create will be synced in Milestone 9".into())
+    let ctx = get_active_context(&state)?;
+
+    let folder_name = if let Some(ref pid) = parent_id {
+        let parent_enc: Option<String> = {
+            let s = state.lock().unwrap();
+            s.db.as_ref().and_then(|conn| {
+                conn.query_row("SELECT name_enc FROM folders WHERE id = ?1", [pid], |r| r.get(0)).ok()
+            })
+        };
+        if let Some(p_enc) = parent_enc {
+            let p_name = ctx.user_key.decrypt_string(&p_enc).unwrap_or(p_enc);
+            format!("{p_name}/{name}")
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+
+    let enc_name = ctx.user_key.encrypt_string(&folder_name).map_err(|e| e.to_string())?;
+
+    let created = api::create_folder(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &enc_name,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let rev_date = created
+        .revision_date
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            db::upsert_folder(
+                conn,
+                &db::FolderRecord {
+                    id: created.id.clone(),
+                    name_enc: created.name.clone(),
+                    revision_date: rev_date,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(created.id)
 }
 
 #[tauri::command]
 pub async fn rename_folder(
-    _folder_id: String,
-    _name: String,
-    _state: State<'_, SafeState>,
+    folder_id: String,
+    name: String,
+    state: State<'_, SafeState>,
 ) -> Result<(), String> {
-    Err("Online folder rename will be synced in Milestone 9".into())
+    let ctx = get_active_context(&state)?;
+
+    let enc_name = ctx.user_key.encrypt_string(&name).map_err(|e| e.to_string())?;
+
+    let updated = api::update_folder(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &folder_id,
+        &enc_name,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let rev_date = updated
+        .revision_date
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            db::upsert_folder(
+                conn,
+                &db::FolderRecord {
+                    id: folder_id,
+                    name_enc: updated.name,
+                    revision_date: rev_date,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_folder(_folder_id: String, _state: State<'_, SafeState>) -> Result<(), String> {
-    Err("Online folder delete will be synced in Milestone 9".into())
+pub async fn delete_folder(folder_id: String, state: State<'_, SafeState>) -> Result<(), String> {
+    let ctx = get_active_context(&state)?;
+
+    api::delete_folder(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &folder_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            db::delete_folder(conn, &folder_id).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
