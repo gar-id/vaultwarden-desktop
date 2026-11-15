@@ -12,28 +12,21 @@ use crate::api::sync::{
 pub struct CipherRequest {
     #[serde(rename = "type")]
     pub cipher_type: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub organization_id: Option<String>,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub favorite: bool,
     pub reprompt: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_for: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub login: Option<SyncCipherLogin>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub card: Option<SyncCipherCard>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<SyncCipherIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<SyncCipherField>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_history: Option<Vec<SyncPasswordHistory>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 }
 

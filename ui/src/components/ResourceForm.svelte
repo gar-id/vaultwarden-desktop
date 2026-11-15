@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { resourceFormMode, selectedFolderId, selectedResource, refreshVaultItems } from "../lib/stores";
+  import {
+    resourceFormMode,
+    selectedFolderId,
+    selectedResource,
+    refreshVaultItems,
+    folderTree,
+  } from "../lib/stores";
   import {
     createResource,
     updateResource,
@@ -8,7 +14,7 @@
     updateResourceTags,
   } from "../lib/tauri";
   import { useEscapeToClose } from "../lib/useEscapeToClose";
-  import type { ResourceItem } from "../lib/types";
+  import type { ResourceItem, FolderNode } from "../lib/types";
 
   // useEscapeToClose expects a boolean Writable; resourceFormMode carries
   // the richer "create" | ResourceItem | null shape VaultList/DetailPane
@@ -29,6 +35,7 @@
     uri: "",
     password: "",
     description: "",
+    folderId: "",
     tags: "",
   });
   let customFields = $state<{ name: string; value: string; type: number }[]>([]);
@@ -39,6 +46,20 @@
 
   let editingResource = $state<ResourceItem | null>(null);
   let cloneSourceName = $state<string | null>(null);
+
+  function flattenFolders(nodes: FolderNode[], prefix = ""): { id: string; name: string }[] {
+    let result: { id: string; name: string }[] = [];
+    for (const node of nodes) {
+      const label = prefix ? `${prefix} / ${node.name}` : node.name;
+      result.push({ id: node.id, name: label });
+      if (node.children && node.children.length > 0) {
+        result = result.concat(flattenFolders(node.children, label));
+      }
+    }
+    return result;
+  }
+
+  let folderOptions = $derived(flattenFolders($folderTree));
 
   $effect(() => {
     const mode = $resourceFormMode;
@@ -55,7 +76,17 @@
     if (mode === "create") {
       editingResource = null;
       customFields = [];
-      form = { name: "", username: "", uri: "", password: "", description: "", tags: "" };
+      const curFolder = $selectedFolderId;
+      const initialFolder = (curFolder && curFolder !== "__favorites__") ? curFolder : "";
+      form = {
+        name: "",
+        username: "",
+        uri: "",
+        password: "",
+        description: "",
+        folderId: initialFolder,
+        tags: "",
+      };
       return;
     }
 
@@ -70,13 +101,16 @@
         uri: src.uri ?? "",
         password: "",
         description: src.description ?? "",
+        folderId: src.folder_parent_id ?? "",
         tags: src.tags ? src.tags.join(", ") : "",
       };
       loadingExisting = true;
       revealSecret(src.id)
         .then((secret) => {
           form.password = secret.password ?? "";
-          form.description = secret.description ?? form.description;
+          if (secret.description !== undefined && secret.description !== null) {
+            form.description = secret.description;
+          }
           if (secret.fields && secret.fields.length > 0) {
             customFields = secret.fields.map((f) => ({
               name: f.name || "",
@@ -105,13 +139,16 @@
       uri: mode.uri ?? "",
       password: "",
       description: mode.description ?? "",
+      folderId: mode.folder_parent_id ?? "",
       tags: mode.tags ? mode.tags.join(", ") : "",
     };
     loadingExisting = true;
     revealSecret(mode.id)
       .then((secret) => {
         form.password = secret.password ?? "";
-        form.description = secret.description ?? form.description;
+        if (secret.description !== undefined && secret.description !== null) {
+          form.description = secret.description;
+        }
         if (secret.fields && secret.fields.length > 0) {
           customFields = secret.fields.map((f) => ({
             name: f.name || "",
@@ -189,19 +226,17 @@
           uri: form.uri || null,
           password: form.password,
           description: form.description || null,
+          folder_parent_id: form.folderId || null,
           fields: formattedFields,
         });
       } else {
-        let folderId: string | null = null;
-        const unsubscribe = selectedFolderId.subscribe((v) => (folderId = v));
-        unsubscribe();
         savedId = await createResource({
           name: form.name,
           username: form.username || null,
           uri: form.uri || null,
           password: form.password,
           description: form.description || null,
-          folder_parent_id: folderId,
+          folder_parent_id: form.folderId || null,
           fields: formattedFields,
         });
       }
@@ -258,6 +293,19 @@
         <span class="text-xs text-gray-400 uppercase tracking-wide">URL / Host</span>
         <input type="text" placeholder="https://example.com or 127.0.0.1:3306" bind:value={form.uri}
           class="mt-1 w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500" />
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-gray-400 uppercase tracking-wide">Folder</span>
+        <select
+          bind:value={form.folderId}
+          class="mt-1 w-full bg-gray-800 text-gray-100 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500 cursor-pointer"
+        >
+          <option value="">(No Folder)</option>
+          {#each folderOptions as f}
+            <option value={f.id}>{f.name}</option>
+          {/each}
+        </select>
       </label>
 
       <label class="block">

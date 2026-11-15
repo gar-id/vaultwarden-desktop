@@ -634,7 +634,6 @@ pub async fn update_resource(
 
     let folder_id = input
         .folder_parent_id
-        .or(cipher.folder_id)
         .filter(|f| f != "__favorites__" && !f.is_empty());
 
     let req = api::CipherRequest {
@@ -646,14 +645,18 @@ pub async fn update_resource(
         favorite: cipher.favorite,
         reprompt: 0,
         encrypted_for: ctx.user_id,
-        login: Some(api::SyncCipherLogin {
-            username: enc_username,
-            password: enc_password,
-            totp: existing_totp,
-            uris: enc_uris,
-        }),
-        card: None,
-        identity: None,
+        login: if cipher.cipher_type == 1 {
+            Some(api::SyncCipherLogin {
+                username: enc_username,
+                password: enc_password,
+                totp: existing_totp,
+                uris: enc_uris,
+            })
+        } else {
+            None
+        },
+        card: cipher.card_enc.as_deref().and_then(|c| serde_json::from_str(c).ok()),
+        identity: cipher.identity_enc.as_deref().and_then(|i| serde_json::from_str(i).ok()),
         fields: if enc_fields.is_empty() { None } else { Some(enc_fields) },
         password_history: if history.is_empty() { None } else { Some(history) },
         key: cipher.key_enc,
