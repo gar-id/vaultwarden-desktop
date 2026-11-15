@@ -194,12 +194,28 @@ pub fn list_folder_tree(state: State<'_, SafeState>) -> Result<Vec<FolderNode>, 
     Ok(nodes)
 }
 
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DecryptedField {
+    pub name: Option<String>,
+    pub value: Option<String>,
+    #[serde(rename = "type")]
+    pub field_type: i32,
+}
+
+#[derive(Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DecryptedPasswordHistory {
+    pub last_used_date: Option<String>,
+    pub password: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct RevealedSecret {
     pub password: Option<String>,
     pub description: Option<String>,
     pub has_totp: bool,
     pub totp_secret: Option<String>,
+    pub fields: Vec<DecryptedField>,
+    pub password_history: Vec<DecryptedPasswordHistory>,
 }
 
 fn get_item_key(s: &crate::state::AppState, cipher: &db::CipherItem) -> Result<crypto::SymmetricKey, String> {
@@ -253,11 +269,41 @@ pub fn reveal_secret(resource_id: String, state: State<'_, SafeState>) -> Result
         }
     }
 
+    let mut fields = Vec::new();
+    if let Some(ref fields_json) = cipher.fields_enc {
+        if let Ok(raw_fields) = serde_json::from_str::<Vec<api::SyncCipherField>>(fields_json) {
+            for f in raw_fields {
+                let name = f.name.as_ref().map(|n| item_key.decrypt_string(n).unwrap_or_else(|_| n.clone()));
+                let value = f.value.as_ref().map(|v| item_key.decrypt_string(v).unwrap_or_else(|_| v.clone()));
+                fields.push(DecryptedField {
+                    name,
+                    value,
+                    field_type: f.field_type.unwrap_or(0),
+                });
+            }
+        }
+    }
+
+    let mut password_history = Vec::new();
+    if let Some(ref hist_json) = cipher.password_history_enc {
+        if let Ok(raw_hist) = serde_json::from_str::<Vec<api::SyncPasswordHistory>>(hist_json) {
+            for h in raw_hist {
+                let pass = h.password.as_ref().map(|p| item_key.decrypt_string(p).unwrap_or_else(|_| p.clone()));
+                password_history.push(DecryptedPasswordHistory {
+                    last_used_date: h.last_used_date,
+                    password: pass,
+                });
+            }
+        }
+    }
+
     Ok(RevealedSecret {
         password,
         description,
         has_totp,
         totp_secret,
+        fields,
+        password_history,
     })
 }
 
@@ -340,8 +386,56 @@ pub fn generate_password(rules: PasswordRules) -> Result<String, String> {
     Ok(password)
 }
 
+struct ActiveSessionContext {
+    access_token: String,
+    user_key: crypto::SymmetricKey,
+    org_keys: std::collections::HashMap<String, crypto::SymmetricKey>,
+    client: api::HttpClient,
+    endpoints: ServerEndpoints,
+    user_id: Option<String>,
+}
+
+fn get_active_context(state: &SafeState) -> Result<ActiveSessionContext, String> {
+    let s = state.lock().unwrap();
+    let account_id = s.active_account_id.clone().ok_or("No active account")?;
+    let user_key = s.user_key.clone().ok_or("Vault is locked")?;
+    let client = s.http_client.clone().unwrap_or_else(api::build_client);
+    let access_token = s.access_token.clone().unwrap_or_default();
+
+    let store = accounts::load(&s.master_key).map_err(|e| e.to_string())?;
+    let account = store
+        .accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or("Active account not found")?;
+
+    let user_id = if let Some(ref conn) = s.db {
+        db::get_metadata(conn, "user_id").ok().flatten()
+    } else {
+        None
+    };
+
+    let endpoints = ServerEndpoints::from_base_url(&account.server_url);
+
+    Ok(ActiveSessionContext {
+        access_token,
+        user_key,
+        org_keys: s.org_keys.clone(),
+        client,
+        endpoints,
+        user_id,
+    })
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct CustomFieldInput {
+    pub name: String,
+    pub value: String,
+    #[serde(rename = "type")]
+    pub field_type: i32,
+}
+
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 pub struct NewResourceInput {
     pub name: String,
     pub username: Option<String>,
@@ -349,38 +443,264 @@ pub struct NewResourceInput {
     pub password: String,
     pub description: Option<String>,
     pub folder_parent_id: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<CustomFieldInput>,
 }
 
 #[tauri::command]
 pub async fn create_resource(
-    _input: NewResourceInput,
-    _state: State<'_, SafeState>,
+    input: NewResourceInput,
+    state: State<'_, SafeState>,
 ) -> Result<String, String> {
-    Err("Online create will be synced in Milestone 9".into())
+    let ctx = get_active_context(&state)?;
+
+    let enc_name = ctx.user_key.encrypt_string(&input.name).map_err(|e| e.to_string())?;
+    let enc_notes = match input.description.as_deref().filter(|d| !d.is_empty()) {
+        Some(d) => Some(ctx.user_key.encrypt_string(d).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let enc_username = match input.username.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) => Some(ctx.user_key.encrypt_string(u).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let enc_password = if !input.password.is_empty() {
+        Some(ctx.user_key.encrypt_string(&input.password).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let enc_uris = match input.uri.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) => {
+            let enc_u = ctx.user_key.encrypt_string(u).map_err(|e| e.to_string())?;
+            Some(vec![api::SyncCipherUri {
+                uri: Some(enc_u),
+                match_type: None,
+            }])
+        }
+        None => None,
+    };
+
+    let mut enc_fields = Vec::new();
+    for f in &input.fields {
+        let f_name = ctx.user_key.encrypt_string(&f.name).map_err(|e| e.to_string())?;
+        let f_val = ctx.user_key.encrypt_string(&f.value).map_err(|e| e.to_string())?;
+        enc_fields.push(api::SyncCipherField {
+            name: Some(f_name),
+            value: Some(f_val),
+            field_type: Some(f.field_type),
+            linked_id: None,
+        });
+    }
+
+    let folder_id = input.folder_parent_id.filter(|f| f != "__favorites__" && !f.is_empty());
+
+    let req = api::CipherRequest {
+        cipher_type: 1, // Login
+        folder_id,
+        organization_id: None,
+        name: enc_name,
+        notes: enc_notes,
+        favorite: false,
+        reprompt: 0,
+        encrypted_for: ctx.user_id,
+        login: Some(api::SyncCipherLogin {
+            username: enc_username,
+            password: enc_password,
+            totp: None,
+            uris: enc_uris,
+        }),
+        card: None,
+        identity: None,
+        fields: if enc_fields.is_empty() { None } else { Some(enc_fields) },
+        password_history: None,
+        key: None,
+    };
+
+    let created_cipher = api::create_cipher(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &req,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            vaultwarden_core::sync::save_sync_cipher(conn, &created_cipher, &ctx.user_key, &ctx.org_keys)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(created_cipher.id)
 }
 
 #[derive(serde::Deserialize)]
-#[allow(dead_code)]
 pub struct ResourceUpdateInput {
     pub name: String,
     pub username: Option<String>,
     pub uri: Option<String>,
     pub password: String,
     pub description: Option<String>,
+    pub folder_parent_id: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<CustomFieldInput>,
 }
 
 #[tauri::command]
 pub async fn update_resource(
-    _resource_id: String,
-    _input: ResourceUpdateInput,
-    _state: State<'_, SafeState>,
+    resource_id: String,
+    input: ResourceUpdateInput,
+    state: State<'_, SafeState>,
 ) -> Result<(), String> {
-    Err("Online update will be synced in Milestone 9".into())
+    let ctx = get_active_context(&state)?;
+
+    let (cipher, item_key) = {
+        let s = state.lock().unwrap();
+        let conn = s.db.as_ref().ok_or("No active vault database")?;
+        let cipher = db::get_cipher_by_id(conn, &resource_id).map_err(|e| e.to_string())?;
+        let item_key = get_item_key(&s, &cipher)?;
+        (cipher, item_key)
+    };
+
+    let enc_name = item_key.encrypt_string(&input.name).map_err(|e| e.to_string())?;
+    let enc_notes = match input.description.as_deref().filter(|d| !d.is_empty()) {
+        Some(d) => Some(item_key.encrypt_string(d).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let enc_username = match input.username.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) => Some(item_key.encrypt_string(u).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let existing_login: Option<api::SyncCipherLogin> = cipher
+        .login_enc
+        .as_deref()
+        .and_then(|l| serde_json::from_str(l).ok());
+
+    let existing_password_decrypted = existing_login
+        .as_ref()
+        .and_then(|l| l.password.as_deref())
+        .and_then(|p| item_key.decrypt_string(p).ok());
+
+    let mut history: Vec<api::SyncPasswordHistory> = cipher
+        .password_history_enc
+        .as_deref()
+        .and_then(|h| serde_json::from_str(h).ok())
+        .unwrap_or_default();
+
+    if !input.password.is_empty()
+        && existing_password_decrypted.as_deref() != Some(&input.password)
+        && existing_login.as_ref().and_then(|l| l.password.as_ref()).is_some()
+    {
+        history.push(api::SyncPasswordHistory {
+            last_used_date: Some(chrono::Utc::now().to_rfc3339()),
+            password: existing_login.as_ref().and_then(|l| l.password.clone()),
+        });
+    }
+
+    let enc_password = if !input.password.is_empty() {
+        Some(item_key.encrypt_string(&input.password).map_err(|e| e.to_string())?)
+    } else {
+        existing_login.as_ref().and_then(|l| l.password.clone())
+    };
+
+    let enc_uris = match input.uri.as_deref().filter(|u| !u.is_empty()) {
+        Some(u) => {
+            let enc_u = item_key.encrypt_string(u).map_err(|e| e.to_string())?;
+            Some(vec![api::SyncCipherUri {
+                uri: Some(enc_u),
+                match_type: None,
+            }])
+        }
+        None => existing_login.as_ref().and_then(|l| l.uris.clone()),
+    };
+
+    let existing_totp = existing_login.and_then(|l| l.totp);
+
+    let mut enc_fields = Vec::new();
+    for f in &input.fields {
+        let f_name = item_key.encrypt_string(&f.name).map_err(|e| e.to_string())?;
+        let f_val = item_key.encrypt_string(&f.value).map_err(|e| e.to_string())?;
+        enc_fields.push(api::SyncCipherField {
+            name: Some(f_name),
+            value: Some(f_val),
+            field_type: Some(f.field_type),
+            linked_id: None,
+        });
+    }
+
+    let folder_id = input
+        .folder_parent_id
+        .or(cipher.folder_id)
+        .filter(|f| f != "__favorites__" && !f.is_empty());
+
+    let req = api::CipherRequest {
+        cipher_type: cipher.cipher_type,
+        folder_id,
+        organization_id: cipher.organization_id.clone(),
+        name: enc_name,
+        notes: enc_notes,
+        favorite: cipher.favorite,
+        reprompt: 0,
+        encrypted_for: ctx.user_id,
+        login: Some(api::SyncCipherLogin {
+            username: enc_username,
+            password: enc_password,
+            totp: existing_totp,
+            uris: enc_uris,
+        }),
+        card: None,
+        identity: None,
+        fields: if enc_fields.is_empty() { None } else { Some(enc_fields) },
+        password_history: if history.is_empty() { None } else { Some(history) },
+        key: cipher.key_enc,
+    };
+
+    let updated_cipher = api::update_cipher(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &resource_id,
+        &req,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            vaultwarden_core::sync::save_sync_cipher(conn, &updated_cipher, &ctx.user_key, &ctx.org_keys)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_resource(_resource_id: String, _state: State<'_, SafeState>) -> Result<(), String> {
-    Err("Online delete will be synced in Milestone 9".into())
+pub async fn delete_resource(resource_id: String, state: State<'_, SafeState>) -> Result<(), String> {
+    let ctx = get_active_context(&state)?;
+
+    api::delete_cipher(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &resource_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            db::delete_cipher(conn, &resource_id).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -408,20 +728,114 @@ pub async fn delete_folder(_folder_id: String, _state: State<'_, SafeState>) -> 
 
 #[tauri::command]
 pub async fn move_item(
-    _model_type: String,
-    _item_id: String,
-    _target_parent_id: Option<String>,
-    _state: State<'_, SafeState>,
+    model_type: String,
+    item_id: String,
+    target_parent_id: Option<String>,
+    state: State<'_, SafeState>,
 ) -> Result<(), String> {
+    if model_type != "resource" {
+        return Ok(());
+    }
+
+    let ctx = get_active_context(&state)?;
+
+    let cipher = {
+        let s = state.lock().unwrap();
+        let conn = s.db.as_ref().ok_or("No active vault database")?;
+        db::get_cipher_by_id(conn, &item_id).map_err(|e| e.to_string())?
+    };
+
+    let target_folder = target_parent_id.filter(|f| f != "__favorites__" && !f.is_empty());
+
+    let req = api::CipherRequest {
+        cipher_type: cipher.cipher_type,
+        folder_id: target_folder,
+        organization_id: cipher.organization_id.clone(),
+        name: cipher.name_enc.clone(),
+        notes: cipher.notes_enc.clone(),
+        favorite: cipher.favorite,
+        reprompt: 0,
+        encrypted_for: ctx.user_id,
+        login: cipher.login_enc.as_deref().and_then(|l| serde_json::from_str(l).ok()),
+        card: cipher.card_enc.as_deref().and_then(|c| serde_json::from_str(c).ok()),
+        identity: cipher.identity_enc.as_deref().and_then(|i| serde_json::from_str(i).ok()),
+        fields: cipher.fields_enc.as_deref().and_then(|f| serde_json::from_str(f).ok()),
+        password_history: cipher.password_history_enc.as_deref().and_then(|h| serde_json::from_str(h).ok()),
+        key: cipher.key_enc.clone(),
+    };
+
+    let updated = api::update_cipher(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &item_id,
+        &req,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            vaultwarden_core::sync::save_sync_cipher(conn, &updated, &ctx.user_key, &ctx.org_keys)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn toggle_favorite(
-    _resource_id: String,
-    _state: State<'_, SafeState>,
+    resource_id: String,
+    state: State<'_, SafeState>,
 ) -> Result<bool, String> {
-    Ok(true)
+    let ctx = get_active_context(&state)?;
+
+    let cipher = {
+        let s = state.lock().unwrap();
+        let conn = s.db.as_ref().ok_or("No active vault database")?;
+        db::get_cipher_by_id(conn, &resource_id).map_err(|e| e.to_string())?
+    };
+
+    let new_fav = !cipher.favorite;
+
+    let req = api::CipherRequest {
+        cipher_type: cipher.cipher_type,
+        folder_id: cipher.folder_id.clone(),
+        organization_id: cipher.organization_id.clone(),
+        name: cipher.name_enc.clone(),
+        notes: cipher.notes_enc.clone(),
+        favorite: new_fav,
+        reprompt: 0,
+        encrypted_for: ctx.user_id,
+        login: cipher.login_enc.as_deref().and_then(|l| serde_json::from_str(l).ok()),
+        card: cipher.card_enc.as_deref().and_then(|c| serde_json::from_str(c).ok()),
+        identity: cipher.identity_enc.as_deref().and_then(|i| serde_json::from_str(i).ok()),
+        fields: cipher.fields_enc.as_deref().and_then(|f| serde_json::from_str(f).ok()),
+        password_history: cipher.password_history_enc.as_deref().and_then(|h| serde_json::from_str(h).ok()),
+        key: cipher.key_enc.clone(),
+    };
+
+    let updated = api::update_cipher(
+        &ctx.client.client,
+        &ctx.endpoints.api_url,
+        &ctx.access_token,
+        &resource_id,
+        &req,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            vaultwarden_core::sync::save_sync_cipher(conn, &updated, &ctx.user_key, &ctx.org_keys)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(new_fav)
 }
 
 #[tauri::command]

@@ -83,6 +83,15 @@ pub struct SyncCipherField {
     pub value: Option<String>,
     #[serde(rename = "type")]
     pub field_type: Option<i32>, // 0=Text, 1=Hidden, 2=Boolean, 3=Linked
+    #[serde(rename = "linkedId")]
+    pub linked_id: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncPasswordHistory {
+    #[serde(rename = "lastUsedDate")]
+    pub last_used_date: Option<String>,
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +124,8 @@ pub struct SyncCipher {
     pub identity: Option<SyncCipherIdentity>,
     pub fields: Option<Vec<SyncCipherField>>,
     pub attachments: Option<Vec<SyncCipherAttachment>>,
+    #[serde(rename = "passwordHistory")]
+    pub password_history: Option<Vec<SyncPasswordHistory>>,
     #[serde(rename = "collectionIds")]
     pub collection_ids: Option<Vec<String>>,
     #[serde(rename = "revisionDate")]

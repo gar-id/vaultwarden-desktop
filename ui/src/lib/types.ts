@@ -46,10 +46,23 @@ export interface FolderNode {
   resource_count: number;
 }
 
+export interface CustomFieldDto {
+  name: string;
+  value: string;
+  type: number; // 0=Text, 1=Hidden, 2=Boolean, 3=Linked
+}
+
+export interface PasswordHistoryDto {
+  last_used_date?: string | null;
+  password?: string | null;
+}
+
 export interface RevealedSecret {
   password: string | null;
   description: string | null;
   has_totp: boolean;
+  fields?: CustomFieldDto[];
+  password_history?: PasswordHistoryDto[];
 }
 
 export interface TotpCode {
@@ -64,6 +77,7 @@ export interface NewResourceInput {
   password: string;
   description: string | null;
   folder_parent_id: string | null;
+  fields?: CustomFieldDto[];
 }
 
 export interface ResourceUpdateInput {
@@ -72,6 +86,8 @@ export interface ResourceUpdateInput {
   uri: string | null;
   password: string;
   description: string | null;
+  folder_parent_id?: string | null;
+  fields?: CustomFieldDto[];
 }
 
 export interface PasswordRules {

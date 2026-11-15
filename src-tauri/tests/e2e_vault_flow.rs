@@ -139,6 +139,7 @@ fn full_vaultwarden_flow_add_switch_unlock_search_reveal_lock() {
             card_enc: None,
             identity_enc: None,
             fields_enc: None,
+            password_history_enc: None,
             key_enc: None,
             favorite: false,
             revision_date: 1700000000,

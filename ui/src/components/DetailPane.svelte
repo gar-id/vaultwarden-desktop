@@ -46,7 +46,9 @@
   let postingComment = $state(false);
   let commentError = $state("");
 
-  let activeTab = $state<"comments" | "activity">("comments");
+  let activeTab = $state<"password_history" | "activity">("password_history");
+  let revealedFields = $state<Record<number, boolean>>({});
+  let revealedHistory = $state<Record<number, boolean>>({});
   let activities = $state<ResourceActivity[]>([]);
   let loadingActivity = $state(false);
 
@@ -230,10 +232,22 @@
     if (allRevealed) {
       passwordRevealed = false;
       noteRevealed = false;
+      revealedFields = {};
+      revealedHistory = {};
     } else {
       await ensureSecretLoaded();
       passwordRevealed = true;
       noteRevealed = true;
+      if (revealedSecret?.fields) {
+        revealedSecret.fields.forEach((_, idx) => {
+          revealedFields[idx] = true;
+        });
+      }
+      if (revealedSecret?.password_history) {
+        revealedSecret.password_history.forEach((_, idx) => {
+          revealedHistory[idx] = true;
+        });
+      }
     }
   }
 
@@ -285,7 +299,9 @@
     newCommentText = "";
     commentError = "";
     activities = [];
-    activeTab = "comments";
+    revealedFields = {};
+    revealedHistory = {};
+    activeTab = "password_history";
 
     if (!r) return;
 
@@ -472,7 +488,23 @@
       {#if !hasTotp || revealedSecret?.password}
         <div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-start justify-between gap-2">
           <div class="min-w-0 flex-1">
-            <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">Password</p>
+            <div class="flex items-center gap-2 mb-1">
+              <p class="text-xs text-gray-500 uppercase tracking-wide">Password</p>
+              {#if revealedSecret?.password_history && revealedSecret.password_history.length > 0}
+                <button
+                  type="button"
+                  onclick={() => (activeTab = "password_history")}
+                  class="text-[10px] text-brand-400 hover:text-brand-300 font-mono bg-brand-950/80 px-1.5 py-0.5 rounded border border-brand-800/60 transition-colors flex items-center gap-1 cursor-pointer"
+                  title="View {revealedSecret.password_history.length} previous passwords in history"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                  </svg>
+                  <span>History ({revealedSecret.password_history.length})</span>
+                </button>
+              {/if}
+            </div>
             <p class="font-mono text-gray-100 select-all truncate">
               {passwordRevealed ? (revealedSecret?.password ?? "(none)") : "••••••••••••"}
             </p>
@@ -516,6 +548,56 @@
         </div>
       {/if}
 
+      <!-- Custom Fields Section -->
+      {#if revealedSecret?.fields && revealedSecret.fields.length > 0}
+        <div class="space-y-2">
+          <p class="text-xs text-gray-500 uppercase tracking-wide px-1">Custom Fields</p>
+          {#each revealedSecret.fields as field, idx}
+            <div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-start justify-between gap-2">
+              <div class="min-w-0 flex-1">
+                <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">{field.name || `Field #${idx + 1}`}</p>
+                {#if field.type === 1}
+                  <p class="font-mono text-gray-100 select-all truncate">
+                    {revealedFields[idx] ? (field.value || "(empty)") : "••••••••••••"}
+                  </p>
+                {:else if field.type === 2}
+                  <p class="text-sm font-medium {field.value === 'true' || field.value === '1' ? 'text-emerald-400' : 'text-gray-400'}">
+                    {field.value === 'true' || field.value === '1' ? '✓ True / Yes' : '✕ False / No'}
+                  </p>
+                {:else}
+                  <p class="font-mono text-gray-100 select-all truncate">{field.value || "(empty)"}</p>
+                {/if}
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                {#if field.type === 1}
+                  <button
+                    type="button"
+                    onclick={() => (revealedFields[idx] = !revealedFields[idx])}
+                    title={revealedFields[idx] ? "Hide field" : "Reveal field"}
+                    class="text-gray-400 hover:text-brand-400 transition-colors p-1 rounded hover:bg-gray-800 flex items-center justify-center w-7 h-7 cursor-pointer"
+                  >
+                    {#if revealedFields[idx]}
+                      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                      </svg>
+                    {:else}
+                      <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    {/if}
+                  </button>
+                {/if}
+                {#if field.type !== 2}
+                  <CopyButton value={field.value ?? ""} title="Copy field value" />
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
       <!-- Always show Note / Description container box -->
       <div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-start justify-between gap-2">
         <div class="min-w-0 flex-1">
@@ -556,19 +638,19 @@
         </div>
       </div>
 
-      <!-- Tabbed container: Comments & Activity / History -->
+      <!-- Tabbed container: Password History & Revision Info -->
       <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
         <!-- Tab Headers -->
         <div class="flex items-center gap-4 border-b border-gray-800 pb-2">
           <button
             type="button"
-            onclick={() => (activeTab = "comments")}
+            onclick={() => (activeTab = "password_history")}
             class="text-xs uppercase tracking-wide font-semibold pb-1 -mb-2 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer
-                   {activeTab === 'comments' ? 'border-brand-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}"
+                   {activeTab === 'password_history' ? 'border-brand-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}"
           >
-            <span>Comments</span>
-            {#if comments.length > 0}
-              <span class="bg-gray-800 text-gray-300 text-[10px] px-1.5 py-0.5 rounded-full font-mono">{comments.length}</span>
+            <span>Password History</span>
+            {#if revealedSecret?.password_history && revealedSecret.password_history.length > 0}
+              <span class="bg-brand-900/80 text-brand-300 text-[10px] px-1.5 py-0.5 rounded-full font-mono">{revealedSecret.password_history.length}</span>
             {/if}
           </button>
 
@@ -578,103 +660,68 @@
             class="text-xs uppercase tracking-wide font-semibold pb-1 -mb-2 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer
                    {activeTab === 'activity' ? 'border-brand-500 text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}"
           >
-            <span>Activity & History</span>
-            {#if activities.length > 0}
-              <span class="bg-gray-800 text-gray-300 text-[10px] px-1.5 py-0.5 rounded-full font-mono">{activities.length}</span>
-            {/if}
+            <span>Revision Info</span>
           </button>
         </div>
 
-        {#if activeTab === "comments"}
-          {#if loadingComments}
-            <p class="text-xs text-gray-500 py-2 text-center">Loading comments...</p>
-          {:else if comments.length > 0}
+        {#if activeTab === "password_history"}
+          {#if revealedSecret?.password_history && revealedSecret.password_history.length > 0}
             <div class="space-y-2 max-h-56 overflow-y-auto pr-1">
-              {#each comments as c}
-                <div class="bg-gray-950/70 border border-gray-800/80 rounded p-2.5 text-xs space-y-1">
-                  <div class="flex items-center justify-between text-gray-400 text-[11px]">
-                    <span class="font-medium text-gray-200">
-                      {c.creator?.profile?.first_name || c.creator?.profile?.last_name
-                        ? `${c.creator.profile.first_name ?? ""} ${c.creator.profile.last_name ?? ""}`.trim()
-                        : c.creator?.username ?? "User"}
+              {#each revealedSecret.password_history as hist, idx}
+                <div class="bg-gray-950/70 border border-gray-800/80 rounded p-2.5 text-xs flex items-center justify-between gap-3">
+                  <div class="min-w-0 flex-1 space-y-1">
+                    <span class="text-gray-400 font-mono text-[11px] block">
+                      {hist.last_used_date ? new Date(hist.last_used_date).toLocaleString() : `Revision #${idx + 1}`}
                     </span>
-                    <div class="flex items-center gap-2">
-                      <span class="text-gray-500">{new Date(c.created).toLocaleDateString()}</span>
-                      <button
-                        onclick={() => handleDeleteComment(c.id)}
-                        title="Delete comment"
-                        class="text-gray-500 hover:text-red-400 transition-colors p-0.5"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                  <p class="text-gray-200 whitespace-pre-wrap break-words">{c.content}</p>
-                </div>
-              {/each}
-            </div>
-          {:else}
-            <p class="text-xs text-gray-500 text-center py-1">No comments on this credential yet.</p>
-          {/if}
-
-          <form onsubmit={(e) => { e.preventDefault(); handleAddComment(); }} class="space-y-2 pt-2 border-t border-gray-800">
-            <textarea
-              bind:value={newCommentText}
-              placeholder="Add a comment or note..."
-              rows={2}
-              class="w-full bg-gray-800 text-gray-100 placeholder-gray-500 rounded p-2 text-xs outline-none focus:ring-1 focus:ring-brand-500 resize-none"
-            ></textarea>
-            {#if commentError}
-              <p class="text-brand-400 text-xs">{commentError}</p>
-            {/if}
-            <div class="flex justify-end">
-              <button
-                type="submit"
-                disabled={postingComment || !newCommentText.trim()}
-                class="px-3 py-1 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded text-xs font-medium transition-colors cursor-pointer"
-              >
-                {postingComment ? "Posting..." : "Post Comment"}
-              </button>
-            </div>
-          </form>
-        {:else}
-          <!-- Activity & History List -->
-          {#if loadingActivity}
-            <p class="text-xs text-gray-500 py-4 text-center">Loading activity & history...</p>
-          {:else if activities.length > 0}
-            <div class="space-y-2 max-h-64 overflow-y-auto pr-1">
-              {#each activities as act}
-                {@const userDisplayName = act.user?.profile?.first_name || act.user?.profile?.last_name
-                  ? `${act.user.profile.first_name ?? ""} ${act.user.profile.last_name ?? ""}`.trim()
-                  : act.user?.username ?? "User"}
-                <div class="bg-gray-950/70 border border-gray-800/80 rounded p-2.5 text-xs flex items-start justify-between gap-3">
-                  <div class="min-w-0 flex-1 space-y-0.5">
-                    <div class="flex items-center gap-2">
-                      <span class="w-1.5 h-1.5 rounded-full bg-brand-500 shrink-0"></span>
-                      <span class="font-medium text-gray-200">
-                        {formatActionLabel(act.type, act.context)}
-                      </span>
-                    </div>
-                    <p class="text-[11px] text-gray-500 pl-3.5">
-                      by <span class="text-gray-400 font-medium">{userDisplayName}</span>
+                    <p class="font-mono text-gray-200 select-all truncate text-sm">
+                      {revealedHistory[idx] ? (hist.password || "(empty)") : "••••••••••••"}
                     </p>
                   </div>
-                  {#if act.created}
-                    <span class="text-[11px] text-gray-500 shrink-0 font-mono">
-                      {new Date(act.created).toLocaleDateString()} {new Date(act.created).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  {/if}
+                  <div class="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onclick={() => (revealedHistory[idx] = !revealedHistory[idx])}
+                      title={revealedHistory[idx] ? "Hide password" : "Reveal password"}
+                      class="text-gray-400 hover:text-brand-400 transition-colors p-1 rounded hover:bg-gray-800 flex items-center justify-center w-7 h-7 cursor-pointer"
+                    >
+                      {#if revealedHistory[idx]}
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                          <line x1="1" y1="1" x2="23" y2="23" />
+                        </svg>
+                      {:else}
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
+                      {/if}
+                    </button>
+                    <CopyButton value={hist.password ?? ""} title="Copy historical password" />
+                  </div>
                 </div>
               {/each}
             </div>
           {:else}
-            <p class="text-xs text-gray-500 text-center py-4">
-              No audit logs or revision history available for this credential.
-            </p>
+            <p class="text-xs text-gray-500 text-center py-4">No previous passwords recorded in history.</p>
           {/if}
+        {:else}
+          <!-- Revision Info -->
+          <div class="space-y-2 text-xs py-2">
+            <div class="flex items-center justify-between text-gray-400 border-b border-gray-800/60 pb-2">
+              <span>Last Modified</span>
+              <span class="font-mono text-gray-200">
+                {$selectedResource.modified_at ? new Date($selectedResource.modified_at * 1000).toLocaleString() : "Unknown"}
+              </span>
+            </div>
+            <div class="flex items-center justify-between text-gray-400 border-b border-gray-800/60 pb-2">
+              <span>Item ID</span>
+              <span class="font-mono text-gray-300 text-[11px]">{$selectedResource.id}</span>
+            </div>
+            <div class="flex items-center justify-between text-gray-400">
+              <span>Type</span>
+              <span class="font-mono text-gray-200 capitalize">{$selectedResource.resource_type_slug || "Login"}</span>
+            </div>
+          </div>
         {/if}
       </div>
     </div>

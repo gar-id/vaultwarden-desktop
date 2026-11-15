@@ -2,9 +2,10 @@ use reqwest::Client;
 use rusqlite::Connection;
 use std::collections::HashMap;
 
-use crate::api;
+use crate::api::{self, SyncCipher};
 use crate::crypto::SymmetricKey;
 use crate::storage::db::{self, CipherItem, CollectionRecord, FolderRecord, OrganizationRecord};
+use crate::storage::StorageError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultState {
@@ -45,6 +46,9 @@ pub async fn sync_vault(
             };
         }
     };
+
+    let _ = db::set_metadata(conn, "user_id", &sync_data.profile.id);
+    let _ = db::set_metadata(conn, "user_email", &sync_data.profile.email);
 
     // 1. Process Organizations
     if let Some(orgs) = sync_data.profile.organizations {
@@ -97,78 +101,7 @@ pub async fn sync_vault(
             // Check if cipher exists to count added vs updated
             let exists = db::get_cipher_by_id(conn, &c.id).is_ok();
 
-            // Determine key to decrypt name / username / uri for search cache
-            let parent_key = if let Some(ref org_id) = c.organization_id {
-                org_keys.get(org_id).unwrap_or(user_key)
-            } else {
-                user_key
-            };
-
-            let item_key = if let Some(ref key_enc) = c.key {
-                parent_key
-                    .decrypt_bytes(key_enc)
-                    .ok()
-                    .and_then(|b| SymmetricKey::from_slice(&b).ok())
-                    .unwrap_or_else(|| parent_key.clone())
-            } else {
-                parent_key.clone()
-            };
-
-            let decrypted_name = item_key.decrypt_string(&c.name).unwrap_or_else(|_| c.name.clone());
-
-            let mut decrypted_username = None;
-            let mut decrypted_uri = None;
-
-            if let Some(ref login) = c.login {
-                if let Some(ref u_enc) = login.username {
-                    decrypted_username = item_key.decrypt_string(u_enc).ok();
-                }
-                if let Some(ref uris) = login.uris {
-                    if let Some(first_uri) = uris.first() {
-                        if let Some(ref uri_enc) = first_uri.uri {
-                            decrypted_uri = item_key.decrypt_string(uri_enc).ok();
-                        }
-                    }
-                }
-            }
-
-            let rev_date = c
-                .revision_date
-                .as_deref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.timestamp())
-                .unwrap_or(0);
-
-            let del_date = c
-                .deleted_date
-                .as_deref()
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.timestamp());
-
-            let item = CipherItem {
-                id: c.id.clone(),
-                organization_id: c.organization_id,
-                folder_id: c.folder_id,
-                cipher_type: c.cipher_type,
-                name_enc: c.name,
-                notes_enc: c.notes,
-                login_enc: c.login.as_ref().and_then(|l| serde_json::to_string(l).ok()),
-                card_enc: c.card.as_ref().and_then(|cd| serde_json::to_string(cd).ok()),
-                identity_enc: c.identity.as_ref().and_then(|i| serde_json::to_string(i).ok()),
-                fields_enc: c.fields.as_ref().and_then(|f| serde_json::to_string(f).ok()),
-                key_enc: c.key,
-                favorite: c.favorite.unwrap_or(false),
-                revision_date: rev_date,
-                deleted_date: del_date,
-            };
-
-            if let Err(e) = db::upsert_cipher(
-                conn,
-                &item,
-                &decrypted_name,
-                decrypted_username.as_deref(),
-                decrypted_uri.as_deref(),
-            ) {
+            if let Err(e) = save_sync_cipher(conn, &c, user_key, org_keys) {
                 eprintln!("warn: failed to upsert cipher {}: {e}", c.id);
                 continue;
             }
@@ -188,4 +121,84 @@ pub async fn sync_vault(
         deleted: 0,
         error: None,
     }
+}
+
+pub fn save_sync_cipher(
+    conn: &Connection,
+    c: &SyncCipher,
+    user_key: &SymmetricKey,
+    org_keys: &HashMap<String, SymmetricKey>,
+) -> Result<(), StorageError> {
+    let parent_key = if let Some(ref org_id) = c.organization_id {
+        org_keys.get(org_id).unwrap_or(user_key)
+    } else {
+        user_key
+    };
+
+    let item_key = if let Some(key_enc) = c.key.as_deref() {
+        parent_key
+            .decrypt_bytes(key_enc)
+            .ok()
+            .and_then(|b| SymmetricKey::from_slice(&b).ok())
+            .unwrap_or_else(|| parent_key.clone())
+    } else {
+        parent_key.clone()
+    };
+
+    let decrypted_name = item_key.decrypt_string(&c.name).unwrap_or_else(|_| c.name.clone());
+
+    let mut decrypted_username = None;
+    let mut decrypted_uri = None;
+
+    if let Some(ref login) = c.login {
+        if let Some(u_enc) = login.username.as_deref() {
+            decrypted_username = item_key.decrypt_string(u_enc).ok();
+        }
+        if let Some(ref uris) = login.uris {
+            if let Some(first_uri) = uris.first() {
+                if let Some(uri_enc) = first_uri.uri.as_deref() {
+                    decrypted_uri = item_key.decrypt_string(uri_enc).ok();
+                }
+            }
+        }
+    }
+
+    let rev_date = c
+        .revision_date
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+    let del_date = c
+        .deleted_date
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp());
+
+    let item = CipherItem {
+        id: c.id.clone(),
+        organization_id: c.organization_id.clone(),
+        folder_id: c.folder_id.clone(),
+        cipher_type: c.cipher_type,
+        name_enc: c.name.clone(),
+        notes_enc: c.notes.clone(),
+        login_enc: c.login.as_ref().and_then(|l| serde_json::to_string(l).ok()),
+        card_enc: c.card.as_ref().and_then(|cd| serde_json::to_string(cd).ok()),
+        identity_enc: c.identity.as_ref().and_then(|i| serde_json::to_string(i).ok()),
+        fields_enc: c.fields.as_ref().and_then(|f| serde_json::to_string(f).ok()),
+        password_history_enc: c.password_history.as_ref().and_then(|h| serde_json::to_string(h).ok()),
+        key_enc: c.key.clone(),
+        favorite: c.favorite.unwrap_or(false),
+        revision_date: rev_date,
+        deleted_date: del_date,
+    };
+
+    db::upsert_cipher(
+        conn,
+        &item,
+        &decrypted_name,
+        decrypted_username.as_deref(),
+        decrypted_uri.as_deref(),
+    )
 }

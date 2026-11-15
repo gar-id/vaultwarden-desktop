@@ -16,6 +16,7 @@ pub struct CipherItem {
     pub card_enc: Option<String>,
     pub identity_enc: Option<String>,
     pub fields_enc: Option<String>,
+    pub password_history_enc: Option<String>,
     pub key_enc: Option<String>,
     pub favorite: bool,
     pub revision_date: i64,
@@ -85,6 +86,7 @@ fn migrate(conn: &Connection) -> Result<(), StorageError> {
              card_enc TEXT,
              identity_enc TEXT,
              fields_enc TEXT,
+             password_history_enc TEXT,
              key_enc TEXT,
              favorite INTEGER NOT NULL DEFAULT 0,
              revision_date INTEGER NOT NULL,
@@ -174,6 +176,27 @@ fn migrate(conn: &Connection) -> Result<(), StorageError> {
     )
     .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
+    add_column_if_missing(conn, "ciphers", "password_history_enc", "TEXT")?;
+
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    sql_type: &str,
+) -> Result<(), StorageError> {
+    let has_column: bool = conn
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}'"
+        ))
+        .and_then(|mut stmt| stmt.exists([]))
+        .unwrap_or(false);
+    if !has_column {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type}"), [])
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    }
     Ok(())
 }
 
@@ -186,8 +209,8 @@ pub fn upsert_cipher(
     decrypted_uri: Option<&str>,
 ) -> Result<(), StorageError> {
     conn.execute(
-        "INSERT INTO ciphers (id, organization_id, folder_id, type, name_enc, notes_enc, login_enc, card_enc, identity_enc, fields_enc, key_enc, favorite, revision_date, deleted_date)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+        "INSERT INTO ciphers (id, organization_id, folder_id, type, name_enc, notes_enc, login_enc, card_enc, identity_enc, fields_enc, password_history_enc, key_enc, favorite, revision_date, deleted_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
              organization_id=excluded.organization_id,
              folder_id=excluded.folder_id,
@@ -198,6 +221,7 @@ pub fn upsert_cipher(
              card_enc=excluded.card_enc,
              identity_enc=excluded.identity_enc,
              fields_enc=excluded.fields_enc,
+             password_history_enc=excluded.password_history_enc,
              key_enc=excluded.key_enc,
              favorite=excluded.favorite,
              revision_date=excluded.revision_date,
@@ -213,6 +237,7 @@ pub fn upsert_cipher(
             item.card_enc,
             item.identity_enc,
             item.fields_enc,
+            item.password_history_enc,
             item.key_enc,
             if item.favorite { 1 } else { 0 },
             item.revision_date,
@@ -245,11 +270,11 @@ pub fn delete_cipher(conn: &Connection, id: &str) -> Result<(), StorageError> {
 
 pub fn get_cipher_by_id(conn: &Connection, id: &str) -> Result<CipherItem, StorageError> {
     conn.query_row(
-        "SELECT id, organization_id, folder_id, type, name_enc, notes_enc, login_enc, card_enc, identity_enc, fields_enc, key_enc, favorite, revision_date, deleted_date
+        "SELECT id, organization_id, folder_id, type, name_enc, notes_enc, login_enc, card_enc, identity_enc, fields_enc, password_history_enc, key_enc, favorite, revision_date, deleted_date
          FROM ciphers WHERE id = ?1",
         params![id],
         |row| {
-            let fav: i32 = row.get(11)?;
+            let fav: i32 = row.get(12)?;
             Ok(CipherItem {
                 id: row.get(0)?,
                 organization_id: row.get(1)?,
@@ -261,10 +286,11 @@ pub fn get_cipher_by_id(conn: &Connection, id: &str) -> Result<CipherItem, Stora
                 card_enc: row.get(7)?,
                 identity_enc: row.get(8)?,
                 fields_enc: row.get(9)?,
-                key_enc: row.get(10)?,
+                password_history_enc: row.get(10)?,
+                key_enc: row.get(11)?,
                 favorite: fav != 0,
-                revision_date: row.get(12)?,
-                deleted_date: row.get(13)?,
+                revision_date: row.get(13)?,
+                deleted_date: row.get(14)?,
             })
         },
     )
@@ -527,6 +553,7 @@ mod tests {
             card_enc: None,
             identity_enc: None,
             fields_enc: None,
+            password_history_enc: None,
             key_enc: None,
             favorite: false,
             revision_date: 1700000000,
