@@ -182,6 +182,16 @@
         {/if}
       </div>
 
+      <!-- Legal Disclaimer -->
+      <div class="space-y-1 pt-2 border-t border-gray-800 text-[11px] text-gray-500 leading-relaxed">
+        <span class="block text-xs uppercase font-medium tracking-wide text-gray-400">
+          Disclaimer
+        </span>
+        <p>
+          Vaultwarden Desktop is an independent open-source project and is not affiliated with, endorsed by, or associated with Bitwarden, Bitwarden Inc., or Vaultwarden.
+        </p>
+      </div>
+
       <div class="flex justify-end pt-2 border-t border-gray-800">
         <button
           type="button"

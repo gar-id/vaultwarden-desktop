@@ -1,5 +1,7 @@
 # Vaultwarden/Bitwarden Desktop Specification
 
+> **Non-Affiliation Notice:** This project is an independent community software client and is not affiliated with, endorsed by, or associated with Bitwarden, Bitwarden Inc., or the upstream Vaultwarden project.
+
 ## 1. Overview & Objectives
 
 A lightweight, cross-platform, cross-architecture desktop client for

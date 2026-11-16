@@ -323,7 +323,9 @@ pub fn search_ciphers(
         })
     };
 
-    let rows = if trimmed.is_empty() {
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+
+    let rows = if tokens.is_empty() {
         if is_favorites {
             let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
                        FROM ciphers c
@@ -356,10 +358,19 @@ pub fn search_ciphers(
                 .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
         }
     } else {
-        let escaped = trimmed.replace('"', "\"\"");
-        let fts_query = format!("\"{escaped}\"*");
+        // Multi-term search: split by whitespace so each term (e.g. 'user' and 'lala')
+        // is matched as an independent token prefix, requiring all terms to match (AND conjunction)
+        // rather than requiring the exact contiguous phrase "user lala".
+        let fts_query = tokens
+            .iter()
+            .map(|t| {
+                let escaped = t.replace('"', "\"\"");
+                format!("\"{escaped}\"*")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        if is_favorites {
+        let fts_res: Result<Vec<DecryptedCipherSummary>, _> = if is_favorites {
             let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
                        FROM ciphers c
                        JOIN search_cache s ON c.id = s.cipher_id
@@ -375,7 +386,7 @@ pub fn search_ciphers(
             let mapped = stmt.query_map(params![fts_query, organization_id], map_row)
                 .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
             mapped.collect::<SqlResult<Vec<_>>>()
-                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
         } else {
             let sql = "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
                        FROM ciphers c
@@ -392,7 +403,69 @@ pub fn search_ciphers(
             let mapped = stmt.query_map(params![actual_folder_id, organization_id, fts_query], map_row)
                 .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
             mapped.collect::<SqlResult<Vec<_>>>()
-                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+                .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
+        };
+
+        match fts_res {
+            Ok(items) if !items.is_empty() => items,
+            _ => {
+                // Fallback: substring matching across all tokens with AND if FTS prefix index yields 0 results
+                let mut conditions = Vec::new();
+                let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+                if is_favorites {
+                    conditions.push("c.favorite = 1".to_string());
+                } else if let Some(fid) = actual_folder_id {
+                    conditions.push(format!("c.folder_id = ?{}", params_vec.len() + 1));
+                    params_vec.push(Box::new(fid.to_string()));
+                }
+
+                if let Some(org_id) = organization_id {
+                    conditions.push(format!("c.organization_id = ?{}", params_vec.len() + 1));
+                    params_vec.push(Box::new(org_id.to_string()));
+                }
+
+                for token in &tokens {
+                    let p1 = params_vec.len() + 1;
+                    let p2 = params_vec.len() + 2;
+                    let p3 = params_vec.len() + 3;
+                    conditions.push(format!(
+                        "(s.name LIKE ?{p1} OR s.username LIKE ?{p2} OR s.uri LIKE ?{p3})"
+                    ));
+                    let pattern = format!("%{token}%");
+                    params_vec.push(Box::new(pattern.clone()));
+                    params_vec.push(Box::new(pattern.clone()));
+                    params_vec.push(Box::new(pattern));
+                }
+
+                let where_clause = if conditions.is_empty() {
+                    String::new()
+                } else {
+                    format!("AND {}", conditions.join(" AND "))
+                };
+
+                let sql = format!(
+                    "SELECT c.id, c.organization_id, c.folder_id, c.type, s.name, s.username, s.uri, c.favorite, c.revision_date
+                     FROM ciphers c
+                     JOIN search_cache s ON c.id = s.cipher_id
+                     WHERE c.deleted_date IS NULL
+                       {where_clause}
+                     ORDER BY s.name COLLATE NOCASE ASC"
+                );
+
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
+                let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+                let mapped = stmt
+                    .query_map(param_refs.as_slice(), map_row)
+                    .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
+                mapped
+                    .collect::<SqlResult<Vec<_>>>()
+                    .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+            }
         }
     };
 
@@ -592,5 +665,56 @@ mod tests {
         delete_cipher(&conn, "cipher-1").unwrap();
         let res_empty = search_ciphers(&conn, "GitHub", None, None).unwrap();
         assert_eq!(res_empty.len(), 0);
+    }
+
+    #[test]
+    fn test_multi_term_search_conjunction() {
+        let conn = in_memory_db();
+
+        let make_cipher = |id: &str, name: &str, username: &str| {
+            let cipher = CipherItem {
+                id: id.into(),
+                organization_id: None,
+                folder_id: None,
+                cipher_type: 1,
+                name_enc: "enc".into(),
+                notes_enc: None,
+                login_enc: None,
+                card_enc: None,
+                identity_enc: None,
+                fields_enc: None,
+                password_history_enc: None,
+                key_enc: None,
+                favorite: false,
+                revision_date: 1700000000,
+                deleted_date: None,
+            };
+            upsert_cipher(&conn, &cipher, name, Some(username), None).unwrap();
+        };
+
+        make_cipher("1", "Lala User Account", "john");
+        make_cipher("2", "User account for Lala", "alice");
+        make_cipher("3", "Only User Service", "bob");
+        make_cipher("4", "Only Lala Site", "charlie");
+
+        // Searching 'user lala' should find items containing both 'user' AND 'lala',
+        // regardless of word order or intermediate words, not requiring the exact phrase 'user lala'.
+        let res1 = search_ciphers(&conn, "user lala", None, None).unwrap();
+        assert_eq!(res1.len(), 2);
+        let ids: Vec<&str> = res1.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(&"1"));
+        assert!(ids.contains(&"2"));
+
+        // Reverse query 'lala user' must return the same items
+        let res2 = search_ciphers(&conn, "lala user", None, None).unwrap();
+        assert_eq!(res2.len(), 2);
+
+        // Searching just 'user' matches 1, 2, 3
+        let res_user = search_ciphers(&conn, "user", None, None).unwrap();
+        assert_eq!(res_user.len(), 3);
+
+        // Searching just 'lala' matches 1, 2, 4
+        let res_lala = search_ciphers(&conn, "lala", None, None).unwrap();
+        assert_eq!(res_lala.len(), 3);
     }
 }

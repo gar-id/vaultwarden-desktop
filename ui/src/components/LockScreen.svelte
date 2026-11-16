@@ -85,5 +85,9 @@
       class="w-full py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 rounded font-medium transition-colors text-white">
       {loading ? "Unlocking..." : "Unlock"}
     </button>
+
+    <p class="text-[10px] text-gray-500 text-center pt-2 leading-relaxed">
+      Not affiliated with Bitwarden, Bitwarden Inc., or Vaultwarden.
+    </p>
   </form>
 </div>

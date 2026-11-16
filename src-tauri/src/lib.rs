@@ -5,6 +5,7 @@ mod tray;
 use vaultwarden_core::storage::keyring;
 use state::{AppState, SafeState};
 use tauri::{Manager, Runtime, WindowEvent};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 /// Registers all IPC commands and app state on the given builder. Shared
 /// between the real desktop entry point and the e2e test harness so both
@@ -87,6 +88,11 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .plugin(build_logger())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .build(),
+        )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             log::info!("Second instance launched; focusing existing window and locking vault");
             lock_vault_internally(app, "app reopened via app launcher");
@@ -103,6 +109,9 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Minimize to tray instead of quitting, and lock vault
                 api.prevent_close();
+                let _ = window.app_handle().save_window_state(
+                    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                );
                 lock_vault_internally(window.app_handle(), "window closed to tray");
                 let _ = window.hide();
             }

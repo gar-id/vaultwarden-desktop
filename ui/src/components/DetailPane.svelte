@@ -473,7 +473,7 @@
             <a
               href={$selectedResource.uri}
               onclick={(e) => handleOpenUri(e, $selectedResource.uri!)}
-              class="text-brand-400 hover:underline truncate block cursor-pointer"
+              class="text-brand-400 hover:underline break-all block cursor-pointer"
               title="Open {$selectedResource.uri}"
             >
               {$selectedResource.uri}

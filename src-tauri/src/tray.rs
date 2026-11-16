@@ -3,6 +3,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Open Vaultwarden", true, None::<&str>)?;
@@ -23,7 +24,12 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 crate::lock_vault_internally(app, "manual lock from tray");
                 toggle_window(app);
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                let _ = app.save_window_state(
+                    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                );
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -46,6 +52,9 @@ fn toggle_window(app: &AppHandle) {
         let is_visible = window.is_visible().unwrap_or(false);
         let is_minimized = window.is_minimized().unwrap_or(false);
         if is_visible && !is_minimized {
+            let _ = app.save_window_state(
+                StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+            );
             let _ = window.hide();
         } else {
             crate::lock_vault_internally(app, "app reopened from tray");

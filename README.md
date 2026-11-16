@@ -1,5 +1,7 @@
 # Vaultwarden Desktop
 
+> **Notice & Disclaimer:** Vaultwarden Desktop is an independent, community-driven open-source project and is **not** affiliated with, endorsed by, sponsored by, or associated with Bitwarden, Bitwarden Inc., or Vaultwarden. "Bitwarden" is a registered trademark of Bitwarden Inc.
+
 Vaultwarden Desktop is a lightweight, cross-platform desktop client for [Vaultwarden](https://github.com/dani-garcia/vaultwarden) (self-hosted) and official [Bitwarden](https://bitwarden.com) cloud instances, built with Tauri v2, Rust, Svelte 5, and Tailwind CSS.
 
 It provides a clean, fast desktop user experience with offline-first local caching, instant full-text search, multi-account management, organizations & collections support, full item types (Logins, Cards, Secure Notes, Identities, and custom fields), attachments, and zero plaintext secrets on disk.
@@ -76,3 +78,9 @@ vaultwarden-desktop/
 Detailed architectural design records are preserved in:
 - `SPEC.md`: Vaultwarden & Bitwarden Desktop Architecture and Cryptography Specification.
 - `TASKS.md`: Milestone checklist and implementation roadmap tracking.
+
+---
+
+## Disclaimer
+
+Vaultwarden Desktop is an independent, third-party desktop client developed by the community. It is **not** an official product of, nor is it affiliated with, associated with, authorized by, or endorsed by Bitwarden, Bitwarden Inc., or the upstream Vaultwarden project. All product names, logos, and brands are property of their respective owners.
