@@ -61,6 +61,8 @@ export interface RevealedSecret {
   password: string | null;
   description: string | null;
   has_totp: boolean;
+  totp_secret?: string | null;
+  uris?: string[];
   fields?: CustomFieldDto[];
   password_history?: PasswordHistoryDto[];
 }
@@ -73,20 +75,22 @@ export interface TotpCode {
 export interface NewResourceInput {
   name: string;
   username: string | null;
-  uri: string | null;
+  uris: string[];
   password: string;
   description: string | null;
   folder_parent_id: string | null;
+  totp_secret?: string | null;
   fields?: CustomFieldDto[];
 }
 
 export interface ResourceUpdateInput {
   name: string;
   username: string | null;
-  uri: string | null;
+  uris: string[];
   password: string;
   description: string | null;
   folder_parent_id?: string | null;
+  totp_secret?: string | null;
   fields?: CustomFieldDto[];
 }
 

@@ -32,8 +32,9 @@
   let form = $state({
     name: "",
     username: "",
-    uri: "",
+    uris: [""],
     password: "",
+    totp: "",
     description: "",
     folderId: "",
     tags: "",
@@ -81,8 +82,9 @@
       form = {
         name: "",
         username: "",
-        uri: "",
+        uris: [""],
         password: "",
+        totp: "",
         description: "",
         folderId: initialFolder,
         tags: "",
@@ -98,8 +100,9 @@
       form = {
         name: `${src.name} (Copy)`,
         username: src.username ?? "",
-        uri: src.uri ?? "",
+        uris: [src.uri ?? ""],
         password: "",
+        totp: "",
         description: src.description ?? "",
         folderId: src.folder_parent_id ?? "",
         tags: src.tags ? src.tags.join(", ") : "",
@@ -108,6 +111,8 @@
       revealSecret(src.id)
         .then((secret) => {
           form.password = secret.password ?? "";
+          form.totp = secret.totp_secret ?? "";
+          if (secret.uris && secret.uris.length > 0) form.uris = [...secret.uris];
           if (secret.description !== undefined && secret.description !== null) {
             form.description = secret.description;
           }
@@ -136,8 +141,9 @@
     form = {
       name: mode.name,
       username: mode.username ?? "",
-      uri: mode.uri ?? "",
+      uris: [mode.uri ?? ""],
       password: "",
+      totp: "",
       description: mode.description ?? "",
       folderId: mode.folder_parent_id ?? "",
       tags: mode.tags ? mode.tags.join(", ") : "",
@@ -146,6 +152,8 @@
     revealSecret(mode.id)
       .then((secret) => {
         form.password = secret.password ?? "";
+        form.totp = secret.totp_secret ?? "";
+        if (secret.uris && secret.uris.length > 0) form.uris = [...secret.uris];
         if (secret.description !== undefined && secret.description !== null) {
           form.description = secret.description;
         }
@@ -167,6 +175,14 @@
 
   function addCustomField() {
     customFields = [...customFields, { name: "", value: "", type: 0 }];
+  }
+
+  function addUri() {
+    form.uris = [...form.uris, ""];
+  }
+
+  function removeUri(idx: number) {
+    form.uris = form.uris.filter((_, i) => i !== idx);
   }
 
   function removeCustomField(idx: number) {
@@ -197,6 +213,7 @@
   }
 
   async function handleSubmit() {
+    if (loadingExisting) return;
     if (!form.name.trim()) {
       error = "Name is required";
       return;
@@ -223,20 +240,22 @@
         await updateResource(editingResource.id, {
           name: form.name,
           username: form.username || null,
-          uri: form.uri || null,
+          uris: form.uris.map((u) => u.trim()).filter(Boolean),
           password: form.password,
           description: form.description || null,
           folder_parent_id: form.folderId || null,
+          totp_secret: form.totp.trim() || null,
           fields: formattedFields,
         });
       } else {
         savedId = await createResource({
           name: form.name,
           username: form.username || null,
-          uri: form.uri || null,
+          uris: form.uris.map((u) => u.trim()).filter(Boolean),
           password: form.password,
           description: form.description || null,
           folder_parent_id: form.folderId || null,
+          totp_secret: form.totp.trim() || null,
           fields: formattedFields,
         });
       }
@@ -289,11 +308,30 @@
           class="mt-1 w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500" />
       </label>
 
-      <label class="block">
-        <span class="text-xs text-gray-400 uppercase tracking-wide">URL / Host</span>
-        <input type="text" placeholder="https://example.com or 127.0.0.1:3306" bind:value={form.uri}
-          class="mt-1 w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500" />
-      </label>
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-gray-400 uppercase tracking-wide">URL / Host</span>
+          <button type="button" onclick={addUri}
+            class="text-xs text-brand-400 hover:text-brand-300 font-medium cursor-pointer">
+            + Add URL
+          </button>
+        </div>
+        {#each form.uris as _, i}
+          <div class="flex gap-2">
+            <input type="text" placeholder="https://example.com or 127.0.0.1:3306" bind:value={form.uris[i]}
+              class="flex-1 bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-brand-500" />
+            {#if form.uris.length > 1}
+              <button type="button" onclick={() => removeUri(i)} title="Remove URL"
+                class="px-2 text-gray-500 hover:text-red-400">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"></line>
+                  <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+              </button>
+            {/if}
+          </div>
+        {/each}
+      </div>
 
       <label class="block">
         <span class="text-xs text-gray-400 uppercase tracking-wide">Folder</span>
@@ -322,6 +360,13 @@
             Generate
           </button>
         </div>
+      </label>
+
+      <label class="block">
+        <span class="text-xs text-gray-400 uppercase tracking-wide">Authenticator Key (TOTP)</span>
+        <input type="text" placeholder="Base32 secret or otpauth:// URL" bind:value={form.totp}
+          class="mt-1 w-full bg-gray-800 text-gray-100 placeholder-gray-600 rounded px-3 py-1.5 text-sm font-mono outline-none focus:ring-1 focus:ring-brand-500" />
+        <span class="text-[11px] text-gray-500">Leave empty to remove the current authenticator.</span>
       </label>
 
       <!-- Custom Fields Section -->

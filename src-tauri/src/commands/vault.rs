@@ -30,6 +30,41 @@ pub struct SyncResultDto {
     pub error: Option<String>,
 }
 
+/// Runs one full sync pass on a dedicated thread (rusqlite `Connection` is
+/// not `Send`, so the connection is opened inside the blocking task).
+async fn run_sync(
+    account_id: String,
+    client: api::HttpClient,
+    endpoints: ServerEndpoints,
+    access_token: String,
+    user_key: crypto::SymmetricKey,
+    org_keys: std::collections::HashMap<String, crypto::SymmetricKey>,
+) -> Result<vaultwarden_core::sync::SyncResult, String> {
+    tokio::task::spawn_blocking(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Failed to start sync runtime: {e}")));
+                    return;
+                }
+            };
+            let outcome = runtime.block_on(async {
+                let db_path = accounts::account_db_dir(&account_id).join("vault.db");
+                let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+                Ok(vaultwarden_core::sync::sync_vault(
+                    &conn, &client.client, &endpoints.api_url, &access_token, &user_key, &org_keys,
+                ).await)
+            });
+            let _ = tx.send(outcome);
+        });
+        rx.recv().map_err(|_| "Sync thread panicked".to_string())?
+    })
+    .await
+    .map_err(|e| format!("Sync task panicked: {e}"))?
+}
+
 #[tauri::command]
 pub async fn sync_vault(state: State<'_, SafeState>) -> Result<SyncResultDto, String> {
     log::info!("sync_vault: called");
@@ -50,32 +85,20 @@ pub async fn sync_vault(state: State<'_, SafeState>) -> Result<SyncResultDto, St
 
     let endpoints = ServerEndpoints::from_base_url(&server_url);
 
-    let result: Result<vaultwarden_core::sync::SyncResult, String> =
-        tokio::task::spawn_blocking(move || {
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        let _ = tx.send(Err(format!("Failed to start sync runtime: {e}")));
-                        return;
-                    }
-                };
-                let outcome = runtime.block_on(async {
-                    let db_path = accounts::account_db_dir(&account_id).join("vault.db");
-                    let conn = db::open(&db_path).map_err(|e| e.to_string())?;
-                    Ok(vaultwarden_core::sync::sync_vault(
-                        &conn, &client.client, &endpoints.api_url, &access_token, &user_key, &org_keys,
-                    ).await)
-                });
-                let _ = tx.send(outcome);
-            });
-            rx.recv().map_err(|_| "Sync thread panicked".to_string())?
-        })
-        .await
-        .map_err(|e| format!("Sync task panicked: {e}"))?;
+    let mut result = run_sync(
+        account_id.clone(), client.clone(), endpoints.clone(), access_token,
+        user_key.clone(), org_keys.clone(),
+    )
+    .await?;
 
-    let result = result?;
+    // Access tokens live ~2h; refresh once and retry rather than leaving the
+    // user with an offline vault until they lock and unlock again.
+    if result.error.as_deref().is_some_and(|e| e.contains("Session expired")) {
+        if let Ok(token) = refresh_active_token(&state).await {
+            log::info!("sync_vault: token expired — refreshed, retrying sync");
+            result = run_sync(account_id, client, endpoints, token, user_key, org_keys).await?;
+        }
+    }
 
     log::info!(
         "sync_vault: finished — state={:?} added={} updated={} error={:?}",
@@ -214,6 +237,7 @@ pub struct RevealedSecret {
     pub description: Option<String>,
     pub has_totp: bool,
     pub totp_secret: Option<String>,
+    pub uris: Vec<String>,
     pub fields: Vec<DecryptedField>,
     pub password_history: Vec<DecryptedPasswordHistory>,
 }
@@ -236,6 +260,25 @@ fn get_item_key(s: &crate::state::AppState, cipher: &db::CipherItem) -> Result<c
     }
 }
 
+/// Encrypts each non-empty URL/host for the `login.uris` array.
+fn encrypt_uris(
+    key: &crypto::SymmetricKey,
+    uris: &[String],
+) -> Result<Option<Vec<api::SyncCipherUri>>, String> {
+    let mut out = Vec::new();
+    for uri in uris {
+        let uri = uri.trim();
+        if uri.is_empty() {
+            continue;
+        }
+        out.push(api::SyncCipherUri {
+            uri: Some(key.encrypt_string(uri).map_err(|e| e.to_string())?),
+            match_type: None,
+        });
+    }
+    Ok(if out.is_empty() { None } else { Some(out) })
+}
+
 #[tauri::command]
 pub fn reveal_secret(resource_id: String, state: State<'_, SafeState>) -> Result<RevealedSecret, String> {
     let s = state.lock().unwrap();
@@ -248,6 +291,7 @@ pub fn reveal_secret(resource_id: String, state: State<'_, SafeState>) -> Result
     let mut description = None;
     let mut has_totp = false;
     let mut totp_secret = None;
+    let mut uris = Vec::new();
 
     if let Some(ref notes_enc) = cipher.notes_enc {
         description = item_key.decrypt_string(notes_enc).ok();
@@ -257,6 +301,13 @@ pub fn reveal_secret(resource_id: String, state: State<'_, SafeState>) -> Result
         if let Ok(login) = serde_json::from_str::<SyncCipherLogin>(login_json) {
             if let Some(ref pass_enc) = login.password {
                 password = item_key.decrypt_string(pass_enc).ok();
+            }
+            if let Some(ref login_uris) = login.uris {
+                for u in login_uris {
+                    if let Some(uri) = u.uri.as_deref().and_then(|e| item_key.decrypt_string(e).ok()) {
+                        uris.push(uri);
+                    }
+                }
             }
             if let Some(ref totp_enc) = login.totp {
                 if let Ok(t) = item_key.decrypt_string(totp_enc) {
@@ -302,6 +353,7 @@ pub fn reveal_secret(resource_id: String, state: State<'_, SafeState>) -> Result
         description,
         has_totp,
         totp_secret,
+        uris,
         fields,
         password_history,
     })
@@ -387,7 +439,6 @@ pub fn generate_password(rules: PasswordRules) -> Result<String, String> {
 }
 
 struct ActiveSessionContext {
-    access_token: String,
     user_key: crypto::SymmetricKey,
     org_keys: std::collections::HashMap<String, crypto::SymmetricKey>,
     client: api::HttpClient,
@@ -400,7 +451,6 @@ fn get_active_context(state: &SafeState) -> Result<ActiveSessionContext, String>
     let account_id = s.active_account_id.clone().ok_or("No active account")?;
     let user_key = s.user_key.clone().ok_or("Vault is locked")?;
     let client = s.http_client.clone().unwrap_or_else(api::build_client);
-    let access_token = s.access_token.clone().unwrap_or_default();
 
     let store = accounts::load(&s.master_key).map_err(|e| e.to_string())?;
     let account = store
@@ -418,13 +468,84 @@ fn get_active_context(state: &SafeState) -> Result<ActiveSessionContext, String>
     let endpoints = ServerEndpoints::from_base_url(&account.server_url);
 
     Ok(ActiveSessionContext {
-        access_token,
         user_key,
         org_keys: s.org_keys.clone(),
         client,
         endpoints,
         user_id,
     })
+}
+
+/// Exchanges the active account's refresh token for a new access token and
+/// persists it (memory, session map, and the encrypted account store).
+async fn refresh_active_token(state: &SafeState) -> Result<String, String> {
+    let (client, identity_url, refresh_token, account_id) = {
+        let s = state.lock().unwrap();
+        let account_id = s.active_account_id.clone().ok_or("No active account")?;
+        let store = accounts::load(&s.master_key).map_err(|e| e.to_string())?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .ok_or("Active account not found")?;
+        let refresh_token = s
+            .refresh_token
+            .clone()
+            .or_else(|| account.refresh_token.clone())
+            .ok_or("Session expired — please unlock the vault again")?;
+        let endpoints = ServerEndpoints::from_base_url(&account.server_url);
+        (
+            s.http_client.clone().unwrap_or_else(api::build_client),
+            endpoints.identity_url,
+            refresh_token,
+            account_id,
+        )
+    };
+
+    let tok = api::refresh_access_token(&client.client, &identity_url, &refresh_token)
+        .await
+        .map_err(|_| "Session expired — please unlock the vault again".to_string())?;
+
+    {
+        let mut s = state.lock().unwrap();
+        s.access_token = Some(tok.access_token.clone());
+        if tok.refresh_token.is_some() {
+            s.refresh_token = tok.refresh_token.clone();
+        }
+        if let Some(session) = s.sessions.get_mut(&account_id) {
+            session.access_token = Some(tok.access_token.clone());
+            if tok.refresh_token.is_some() {
+                session.refresh_token = tok.refresh_token.clone();
+            }
+        }
+        let mut store = accounts::load(&s.master_key).map_err(|e| e.to_string())?;
+        if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
+            account.access_token = Some(tok.access_token.clone());
+            if tok.refresh_token.is_some() {
+                account.refresh_token = tok.refresh_token.clone();
+            }
+            accounts::save(&s.master_key, &store).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(tok.access_token)
+}
+
+/// Runs an authenticated API call. If the server reports the access token has
+/// expired, refreshes it and retries the call exactly once.
+macro_rules! authed_call {
+    ($state:expr, $token:ident, $call:expr) => {{
+        let mut $token = { $state.lock().unwrap().access_token.clone().unwrap_or_default() };
+        match $call.await {
+            Err(api::ApiError::SessionExpired) => {
+                log::info!("access token expired — refreshing and retrying");
+                $token = refresh_active_token(&$state).await?;
+                $call.await
+            }
+            other => other,
+        }
+        .map_err(|e| e.to_string())?
+    }};
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -439,10 +560,13 @@ pub struct CustomFieldInput {
 pub struct NewResourceInput {
     pub name: String,
     pub username: Option<String>,
-    pub uri: Option<String>,
+    #[serde(default)]
+    pub uris: Option<Vec<String>>,
     pub password: String,
     pub description: Option<String>,
     pub folder_parent_id: Option<String>,
+    #[serde(default)]
+    pub totp_secret: Option<String>,
     #[serde(default)]
     pub fields: Vec<CustomFieldInput>,
 }
@@ -469,14 +593,13 @@ pub async fn create_resource(
     } else {
         None
     };
-    let enc_uris = match input.uri.as_deref().filter(|u| !u.is_empty()) {
-        Some(u) => {
-            let enc_u = ctx.user_key.encrypt_string(u).map_err(|e| e.to_string())?;
-            Some(vec![api::SyncCipherUri {
-                uri: Some(enc_u),
-                match_type: None,
-            }])
-        }
+    let enc_uris = match input.uris.as_deref() {
+        Some(uris) => encrypt_uris(&ctx.user_key, uris)?,
+        None => None,
+    };
+
+    let enc_totp = match input.totp_secret.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => Some(ctx.user_key.encrypt_string(t).map_err(|e| e.to_string())?),
         None => None,
     };
 
@@ -506,7 +629,7 @@ pub async fn create_resource(
         login: Some(api::SyncCipherLogin {
             username: enc_username,
             password: enc_password,
-            totp: None,
+            totp: enc_totp,
             uris: enc_uris,
         }),
         card: None,
@@ -516,14 +639,12 @@ pub async fn create_resource(
         key: None,
     };
 
-    let created_cipher = api::create_cipher(
+    let created_cipher = authed_call!(state, token, api::create_cipher(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &req,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();
@@ -540,10 +661,13 @@ pub async fn create_resource(
 pub struct ResourceUpdateInput {
     pub name: String,
     pub username: Option<String>,
-    pub uri: Option<String>,
+    #[serde(default)]
+    pub uris: Option<Vec<String>>,
     pub password: String,
     pub description: Option<String>,
     pub folder_parent_id: Option<String>,
+    #[serde(default)]
+    pub totp_secret: Option<String>,
     #[serde(default)]
     pub fields: Vec<CustomFieldInput>,
 }
@@ -607,18 +731,18 @@ pub async fn update_resource(
         existing_login.as_ref().and_then(|l| l.password.clone())
     };
 
-    let enc_uris = match input.uri.as_deref().filter(|u| !u.is_empty()) {
-        Some(u) => {
-            let enc_u = item_key.encrypt_string(u).map_err(|e| e.to_string())?;
-            Some(vec![api::SyncCipherUri {
-                uri: Some(enc_u),
-                match_type: None,
-            }])
-        }
+    // An explicitly supplied list replaces the old one (an empty list clears
+    // it); omitting the field keeps whatever the cipher already had.
+    let enc_uris = match input.uris.as_deref() {
+        Some(uris) => encrypt_uris(&item_key, uris)?,
         None => existing_login.as_ref().and_then(|l| l.uris.clone()),
     };
 
-    let existing_totp = existing_login.and_then(|l| l.totp);
+    // An empty/omitted value clears the stored authenticator secret.
+    let enc_totp = match input.totp_secret.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) => Some(item_key.encrypt_string(t).map_err(|e| e.to_string())?),
+        None => None,
+    };
 
     let mut enc_fields = Vec::new();
     for f in &input.fields {
@@ -649,7 +773,7 @@ pub async fn update_resource(
             Some(api::SyncCipherLogin {
                 username: enc_username,
                 password: enc_password,
-                totp: existing_totp,
+                totp: enc_totp,
                 uris: enc_uris,
             })
         } else {
@@ -662,15 +786,13 @@ pub async fn update_resource(
         key: cipher.key_enc,
     };
 
-    let updated_cipher = api::update_cipher(
+    let updated_cipher = authed_call!(state, token, api::update_cipher(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &resource_id,
         &req,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();
@@ -687,14 +809,12 @@ pub async fn update_resource(
 pub async fn delete_resource(resource_id: String, state: State<'_, SafeState>) -> Result<(), String> {
     let ctx = get_active_context(&state)?;
 
-    api::delete_cipher(
+    authed_call!(state, token, api::delete_cipher(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &resource_id,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();
@@ -733,14 +853,12 @@ pub async fn create_folder(
 
     let enc_name = ctx.user_key.encrypt_string(&folder_name).map_err(|e| e.to_string())?;
 
-    let created = api::create_folder(
+    let created = authed_call!(state, token, api::create_folder(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &enc_name,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     let rev_date = created
         .revision_date
@@ -777,15 +895,13 @@ pub async fn rename_folder(
 
     let enc_name = ctx.user_key.encrypt_string(&name).map_err(|e| e.to_string())?;
 
-    let updated = api::update_folder(
+    let updated = authed_call!(state, token, api::update_folder(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &folder_id,
         &enc_name,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     let rev_date = updated
         .revision_date
@@ -816,14 +932,12 @@ pub async fn rename_folder(
 pub async fn delete_folder(folder_id: String, state: State<'_, SafeState>) -> Result<(), String> {
     let ctx = get_active_context(&state)?;
 
-    api::delete_folder(
+    authed_call!(state, token, api::delete_folder(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &folder_id,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();
@@ -873,15 +987,13 @@ pub async fn move_item(
         key: cipher.key_enc.clone(),
     };
 
-    let updated = api::update_cipher(
+    let updated = authed_call!(state, token, api::update_cipher(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &item_id,
         &req,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();
@@ -926,15 +1038,13 @@ pub async fn toggle_favorite(
         key: cipher.key_enc.clone(),
     };
 
-    let updated = api::update_cipher(
+    let updated = authed_call!(state, token, api::update_cipher(
         &ctx.client.client,
         &ctx.endpoints.api_url,
-        &ctx.access_token,
+        &token,
         &resource_id,
         &req,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    ));
 
     {
         let s = state.lock().unwrap();

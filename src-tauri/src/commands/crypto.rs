@@ -186,6 +186,18 @@ pub async fn unlock_vault(passphrase: String, state: State<'_, SafeState>) -> Re
     s.refresh_token = new_refresh.clone();
     s.vault_state = vault_state;
 
+    // Persist freshly issued tokens — refresh tokens rotate, so keeping a stale
+    // one on disk would break token refresh after the app restarts.
+    if s.access_token.is_some() {
+        if let Ok(mut store) = accounts::load(&s.master_key) {
+            if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
+                account.access_token = s.access_token.clone();
+                account.refresh_token = s.refresh_token.clone();
+                let _ = accounts::save(&s.master_key, &store);
+            }
+        }
+    }
+
     // Unwrap Org keys from SQLite DB if organizations table has keys
     let mut unwrapped_org_keys = std::collections::HashMap::new();
     if let Some(ref conn) = s.db {

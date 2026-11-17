@@ -37,6 +37,13 @@
   // password reveal toggle — a user with a TOTP-only resource has no
   // password to reveal at all, so this can't be gated behind `revealed`.
   let totpCode = $state("");
+  let uris = $derived(
+    revealedSecret?.uris && revealedSecret.uris.length > 0
+      ? revealedSecret.uris
+      : $selectedResource?.uri
+        ? [$selectedResource.uri]
+        : []
+  );
   let totpExpiresIn = $state(0);
   let totpInterval: ReturnType<typeof setInterval>;
   let hasTotp = $state(false);
@@ -466,20 +473,24 @@
         </div>
       {/if}
 
-      {#if $selectedResource.uri}
-        <div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-start justify-between gap-2">
-          <div class="min-w-0 flex-1">
-            <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">URL / Host</p>
-            <a
-              href={$selectedResource.uri}
-              onclick={(e) => handleOpenUri(e, $selectedResource.uri!)}
-              class="text-brand-400 hover:underline break-all block cursor-pointer"
-              title="Open {$selectedResource.uri}"
-            >
-              {$selectedResource.uri}
-            </a>
+      {#if uris.length > 0}
+        <div class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3">
+          <p class="text-xs text-gray-500 uppercase tracking-wide mb-1">URL / Host</p>
+          <div class="space-y-1">
+            {#each uris as uri}
+              <div class="flex items-start justify-between gap-2">
+                <a
+                  href={uri}
+                  onclick={(e) => handleOpenUri(e, uri)}
+                  class="text-brand-400 hover:underline break-all block cursor-pointer min-w-0 flex-1"
+                  title="Open {uri}"
+                >
+                  {uri}
+                </a>
+                <CopyButton value={uri} title="Copy URL/Host" />
+              </div>
+            {/each}
           </div>
-          <CopyButton value={$selectedResource.uri} title="Copy URL/Host" />
         </div>
       {/if}
 
