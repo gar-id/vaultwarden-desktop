@@ -204,11 +204,12 @@
     }
   }
 
-  async function refreshList() {
+  async function refreshList(): Promise<ResourceItem[]> {
     try {
-      await refreshVaultItems();
+      return await refreshVaultItems();
     } catch (e) {
       console.error("ResourceForm: failed to refresh list after write:", e);
+      return [];
     }
   }
 
@@ -270,7 +271,21 @@
         console.warn("Could not save tags:", tagErr);
       }
 
-      await refreshList();
+      const items = await refreshList();
+      // The detail pane renders from selectedResource, so point it at the
+      // re-fetched copy after an edit (identity change also reloads the secret).
+      if (editingResource) {
+        const updated = items.find((i) => i.id === savedId) ?? {
+          ...editingResource,
+          name: form.name,
+          username: form.username || null,
+          uri: form.uris.map((u) => u.trim()).filter(Boolean)[0] ?? null,
+          description: form.description || null,
+          folder_parent_id: form.folderId || null,
+          tags: tagsList,
+        };
+        selectedResource.set(updated);
+      }
       resourceFormMode.set(null);
     } catch (e: unknown) {
       error = e instanceof Error ? e.message : String(e);

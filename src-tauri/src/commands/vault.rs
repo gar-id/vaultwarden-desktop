@@ -110,6 +110,15 @@ pub async fn sync_vault(state: State<'_, SafeState>) -> Result<SyncResultDto, St
         s.vault_state = result.state;
     }
 
+    // One-time repair for the `matchType`/`match` URI key bug (see
+    // `repair_legacy_uri_match_key`). Only safe once the local cache is
+    // fresh (OnlineReady) and the session has a live token to re-save with.
+    // Gated by a metadata flag, so every sync after the first is a single
+    // cheap lookup — doesn't block normal sync latency in any noticeable way.
+    if result.state == vaultwarden_core::sync::VaultState::OnlineReady {
+        repair_legacy_uri_match_key(&state).await;
+    }
+
     Ok(SyncResultDto {
         state: match result.state {
             vaultwarden_core::sync::VaultState::OnlineReady => "online",
@@ -554,6 +563,155 @@ pub struct CustomFieldInput {
     pub value: String,
     #[serde(rename = "type")]
     pub field_type: i32,
+}
+
+/// Marker left in `login_enc` by the pre-fix client: the URI match field was
+/// serialized as `matchType` instead of the `match` key Bitwarden/Vaultwarden
+/// expect, so the official web vault couldn't read the item's URIs back.
+const LEGACY_MATCH_TYPE_MARKER: &str = "matchType";
+
+/// One-time repair for ciphers saved with the `matchType` bug (see above):
+/// re-saves every affected login cipher unchanged, which re-encrypts its
+/// URIs with the corrected `match` key. Runs once per account, tracked in
+/// the local `metadata` table, and only when online — a failure (or being
+/// offline) leaves the flag unset so it retries on the next unlock.
+async fn repair_legacy_uri_match_key(state: &SafeState) {
+    const METADATA_KEY: &str = "uri_match_key_repair_done";
+
+    let already_done = {
+        let s = state.lock().unwrap();
+        s.db.as_ref()
+            .and_then(|conn| db::get_metadata(conn, METADATA_KEY).ok().flatten())
+            .is_some()
+    };
+    if already_done {
+        return;
+    }
+
+    let affected: Vec<db::CipherItem> = {
+        let s = state.lock().unwrap();
+        let Some(ref conn) = s.db else { return };
+        match db::list_login_ciphers_with_uris(conn) {
+            Ok(items) => items
+                .into_iter()
+                .filter(|c| {
+                    c.login_enc.as_deref().is_some_and(|l| l.contains(LEGACY_MATCH_TYPE_MARKER))
+                })
+                .collect(),
+            Err(e) => {
+                log::warn!("uri match key repair: failed to list ciphers: {e}");
+                return;
+            }
+        }
+    };
+
+    if affected.is_empty() {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            let _ = db::set_metadata(conn, METADATA_KEY, "1");
+        }
+        return;
+    }
+
+    log::info!("uri match key repair: re-saving {} affected cipher(s)", affected.len());
+
+    let Ok(ctx) = get_active_context(state) else {
+        log::info!("uri match key repair: no active session, will retry next unlock");
+        return;
+    };
+
+    let mut failed = 0usize;
+    for cipher in &affected {
+        let Ok(item_key) = get_item_key(&state.lock().unwrap(), cipher) else {
+            failed += 1;
+            continue;
+        };
+
+        let login: Option<SyncCipherLogin> = cipher.login_enc.as_deref().and_then(|l| serde_json::from_str(l).ok());
+        let Some(login) = login else {
+            failed += 1;
+            continue;
+        };
+
+        // Decrypt each URI and re-encrypt through `encrypt_uris`, which now
+        // serializes the `match` key correctly.
+        let decrypted_uris: Vec<String> = login
+            .uris
+            .as_ref()
+            .into_iter()
+            .flatten()
+            .filter_map(|u| u.uri.as_deref().and_then(|e| item_key.decrypt_string(e).ok()))
+            .collect();
+        let Ok(fixed_uris) = encrypt_uris(&item_key, &decrypted_uris) else {
+            failed += 1;
+            continue;
+        };
+
+        let req = api::CipherRequest {
+            cipher_type: cipher.cipher_type,
+            folder_id: cipher.folder_id.clone(),
+            organization_id: cipher.organization_id.clone(),
+            name: cipher.name_enc.clone(),
+            notes: cipher.notes_enc.clone(),
+            favorite: cipher.favorite,
+            reprompt: 0,
+            encrypted_for: ctx.user_id.clone(),
+            login: Some(SyncCipherLogin {
+                username: login.username,
+                password: login.password,
+                totp: login.totp,
+                uris: fixed_uris,
+            }),
+            card: cipher.card_enc.as_deref().and_then(|c| serde_json::from_str(c).ok()),
+            identity: cipher.identity_enc.as_deref().and_then(|i| serde_json::from_str(i).ok()),
+            fields: cipher.fields_enc.as_deref().and_then(|f| serde_json::from_str(f).ok()),
+            password_history: cipher.password_history_enc.as_deref().and_then(|h| serde_json::from_str(h).ok()),
+            key: cipher.key_enc.clone(),
+        };
+
+        let token = { state.lock().unwrap().access_token.clone().unwrap_or_default() };
+        let result = api::update_cipher(&ctx.client.client, &ctx.endpoints.api_url, &token, &cipher.id, &req).await;
+        let result = match result {
+            Err(api::ApiError::SessionExpired) => {
+                match refresh_active_token(state).await {
+                    Ok(fresh_token) => {
+                        api::update_cipher(&ctx.client.client, &ctx.endpoints.api_url, &fresh_token, &cipher.id, &req).await
+                    }
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
+                }
+            }
+            other => other,
+        };
+
+        match result {
+            Ok(updated) => {
+                let s = state.lock().unwrap();
+                if let Some(ref conn) = s.db {
+                    let _ = vaultwarden_core::sync::save_sync_cipher(conn, &updated, &ctx.user_key, &ctx.org_keys);
+                }
+            }
+            Err(e) => {
+                log::warn!("uri match key repair: failed to re-save cipher {}: {e}", cipher.id);
+                failed += 1;
+            }
+        }
+    }
+
+    if failed == 0 {
+        let s = state.lock().unwrap();
+        if let Some(ref conn) = s.db {
+            let _ = db::set_metadata(conn, METADATA_KEY, "1");
+        }
+        log::info!("uri match key repair: done, {} cipher(s) fixed", affected.len());
+    } else {
+        log::warn!(
+            "uri match key repair: {failed} of {} cipher(s) failed, will retry next unlock",
+            affected.len()
+        );
+    }
 }
 
 #[derive(serde::Deserialize)]

@@ -26,6 +26,8 @@ pub struct SyncProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncCipherUri {
     pub uri: Option<String>,
+    // shortcut: no uriChecksum field, server/clients tolerate its absence
+    #[serde(rename = "match")]
     pub match_type: Option<i32>,
 }
 

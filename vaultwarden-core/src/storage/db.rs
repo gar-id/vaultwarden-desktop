@@ -297,6 +297,43 @@ pub fn get_cipher_by_id(conn: &Connection, id: &str) -> Result<CipherItem, Stora
     .map_err(|_| StorageError::NotFound(id.to_string()))
 }
 
+/// Every login-type cipher this account owns that has login data, for a
+/// one-time migration pass. Deleted (trashed) items are included too, since
+/// the server still holds their stale `uris` shape.
+pub fn list_login_ciphers_with_uris(conn: &Connection) -> Result<Vec<CipherItem>, StorageError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, organization_id, folder_id, type, name_enc, notes_enc, login_enc, card_enc, identity_enc, fields_enc, password_history_enc, key_enc, favorite, revision_date, deleted_date
+             FROM ciphers WHERE type = 1 AND login_enc IS NOT NULL",
+        )
+        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let fav: i32 = row.get(12)?;
+            Ok(CipherItem {
+                id: row.get(0)?,
+                organization_id: row.get(1)?,
+                folder_id: row.get(2)?,
+                cipher_type: row.get(3)?,
+                name_enc: row.get(4)?,
+                notes_enc: row.get(5)?,
+                login_enc: row.get(6)?,
+                card_enc: row.get(7)?,
+                identity_enc: row.get(8)?,
+                fields_enc: row.get(9)?,
+                password_history_enc: row.get(10)?,
+                key_enc: row.get(11)?,
+                favorite: fav != 0,
+                revision_date: row.get(13)?,
+                deleted_date: row.get(14)?,
+            })
+        })
+        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?
+        .collect::<SqlResult<Vec<_>>>()
+        .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+    Ok(rows)
+}
+
 /// Search ciphers via FTS5 index.
 pub fn search_ciphers(
     conn: &Connection,
